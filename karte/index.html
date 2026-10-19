@@ -904,8 +904,7 @@ const picAnchor = (p, n) => `<xdr:oneCellAnchor><xdr:from><xdr:col>${p.col}</xdr
 async function buildXlsx(p){
   const vs = visitsOf(p.id).slice().reverse();
   const sheets = vs.length ? vs : [null];
-  const age = p.birth ? Math.floor((new Date(vs[0]?.date ? vs[0].date + 'T00:00' : Date.now()) - new Date(p.birth + 'T00:00')) / 31557600000) : null;
-  const birth = [p.birth ? `${fmtDate(p.birth)}（${age}歳）` : '', p.sex].filter(Boolean).join('／');
+  const birth = p.birth ? p.birth.split('-').map(Number).join('/') : '';   // 西暦の生年月日のみ（曜日・年齢は入れない）
   const {zip, blob} = memZip();
   const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships', PR = 'http://schemas.openxmlformats.org/package/2006/relationships';
   for (let i = 0; i < sheets.length; i++) {
@@ -914,7 +913,7 @@ async function buildXlsx(p){
     if (first) x = x.replace('<sheetView ', '<sheetView tabSelected="1" ');
     const o = first ? 1 : 0;   // 初回シートは「生年月日/性別」の行がある分、1行下がる
     x = fillCell(x, 'B2', c.date);
-    if (first) x = fillCell(x, 'B3', birth);
+    if (first) { x = fillCell(x, 'B3', birth); x = fillCell(x, 'C3', p.sex); }   // 性別は「備考」見出しのすぐ下
     x = fillCell(x, `B${3 + o}`, c.S); x = fillCell(x, `B${4 + o}`, c.O); x = fillCell(x, `B${5 + o}`, c.A);
     x = fillCell(x, `B${6 + o}`, c.P); x = fillCell(x, `B${7 + o}`, c.self); x = fillCell(x, `C${3 + o}`, c.note, NOTE_STYLE);
     x = fitRow(x, 3 + o, [[c.S, 74], [c.note, 30]]);
