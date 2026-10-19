@@ -242,7 +242,7 @@ async function lock(){
   locking = false; renderLock();
 }
 let idleT;
-function resetIdle(){ clearTimeout(idleT); if (KEY) idleT = setTimeout(() => { if (!rec) lock(); else resetIdle(); }, (S.cfg?.lockMin || 5) * 60000); }
+function resetIdle(){ clearTimeout(idleT); if (KEY) idleT = setTimeout(() => { if (!rec && !busy) lock(); else resetIdle(); }, (S.cfg?.lockMin || 5) * 60000); }
 ['pointerdown','keydown','touchstart'].forEach(ev => document.addEventListener(ev, resetIdle, {passive:true}));
 document.addEventListener('input', () => { if (view.name === 'visit' && F) F.dirty = true; });
 
@@ -340,6 +340,7 @@ function vPatient(){
     ${trend.length > 1 ? `<div style="margin-top:6px">痛みの推移：<span class="painv">${trend.join(' → ')}</span></div>` : ''}
     <div class="row" style="margin-top:10px"><button class="primary" onclick="newVisit('${p.id}')">＋ 今日のカルテ</button>
     <button onclick="go('pform',{id:'${p.id}'})">患者情報を編集</button>
+    <button onclick="exportPatients(['${p.id}'])">📤 エクセル・写真を書き出す</button>
     <button class="danger" onclick="deletePatient('${p.id}')">削除</button></div></div>
   ${vs[0] ? summaryBox(vs[0], '次回来店時に確認すること') : ''}
   <h3>来院履歴（${vs.length}回）</h3>
@@ -492,8 +493,8 @@ async function slotURL(key){ return F.newUrls[key] || await mediaURL(F.media[key
 const photoTag = src => `<img src="${src}" alt=""><div class="gridov"></div>`;
 async function loadSlot(key){ const el = $('#ph_' + key); if (!el) return; const u = await slotURL(key); el.innerHTML = u ? photoTag(u) : '<span class="muted">未撮影</span>'; }
 function loadSlots(){ for (const [p] of PHASES) for (const [d] of DIRS) loadSlot(p + '_' + d); }
-function toJpeg(srcEl, w, h){
-  const m = 1600, r = Math.min(1, m / Math.max(w, h));
+function toJpeg(srcEl, w, h, m = 1600){
+  const r = Math.min(1, m / Math.max(w, h));
   const c = document.createElement('canvas'); c.width = Math.round(w * r); c.height = Math.round(h * r);
   c.getContext('2d').drawImage(srcEl, 0, 0, c.width, c.height);
   return new Promise(res => c.toBlob(res, 'image/jpeg', 0.85));
@@ -654,19 +655,18 @@ async function drawCompare(){
     for (const [d] of DIRS) { const u = await s.url(d); h += `<div class="ph">${u ? photoTag(u) : '<span class="muted">なし</span>'}</div>`; } }
   $('#cmpgrid').innerHTML = h + '</div>';
 }
-async function saveCompare(){
-  if (!confirm('比較画像を端末の「ダウンロード」に保存します。\nこの画像は暗号化されません。お客様への説明に使った後は削除してください。')) return;
-  const src = cmpSources(), cw = 360, ch = 480, lh = 40, hh = 34, W = cw * 4, H = hh + cmpSel.length * (lh + ch);
+// rows: [{label, date, urls:[正面,右,背面,左 の表示用URL]}] → 比較画像（JPEG）
+async function compareImage(rows, grid){
+  const cw = 360, ch = 480, lh = 40, hh = 34, W = cw * 4, H = hh + rows.length * (lh + ch);
   const c = document.createElement('canvas'); c.width = W; c.height = H; const g = c.getContext('2d');
   g.fillStyle = '#fff'; g.fillRect(0, 0, W, H); g.fillStyle = '#2b2523'; g.font = 'bold 22px sans-serif'; g.textAlign = 'center';
   DIRS.forEach(([, l], i) => g.fillText(l, cw * i + cw / 2, 25));
-  const grid = !document.body.classList.contains('nogrid');
-  for (let r = 0; r < cmpSel.length; r++) {
-    const s = src.find(x => x.key === cmpSel[r]), y0 = hh + r * (lh + ch);
+  for (let r = 0; r < rows.length; r++) {
+    const s = rows[r], y0 = hh + r * (lh + ch);
     g.fillStyle = '#8c5e5a'; g.fillRect(0, y0, W, lh); g.fillStyle = '#fff'; g.textAlign = 'left'; g.font = 'bold 20px sans-serif';
     g.fillText(`${s.label}　${fmtDate(s.date)}`, 12, y0 + 27);
     for (let i = 0; i < 4; i++) {
-      const u = await s.url(DIRS[i][0]); if (!u) continue;
+      const u = s.urls[i]; if (!u) continue;
       const img = await new Promise(res => { const im = new Image(); im.onload = () => res(im); im.onerror = () => res(null); im.src = u; }); if (!img) continue;
       const sc = Math.min(cw / img.width, ch / img.height), w = img.width * sc, hgt = img.height * sc, x = cw * i + (cw - w) / 2, y = y0 + lh + (ch - hgt) / 2;
       g.drawImage(img, x, y, w, hgt);
@@ -675,7 +675,17 @@ async function saveCompare(){
         g.stroke(); g.strokeStyle = 'rgba(255,50,50,.85)'; g.lineWidth = 2; g.beginPath(); g.moveTo(x + w / 2, y); g.lineTo(x + w / 2, y + hgt); g.stroke(); }
     }
   }
-  c.toBlob(b => { const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = `比較_${F.date}.jpg`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); }, 'image/jpeg', 0.9);
+  return new Promise(res => c.toBlob(res, 'image/jpeg', 0.9));
+}
+let compareURL = null;
+async function saveCompare(){
+  if (!confirm('比較画像を端末の「ダウンロード」に保存します。\nこの画像は暗号化されません。お客様への説明に使った後は削除してください。')) return;
+  const src = cmpSources(), rows = [];
+  for (const k of cmpSel) { const s = src.find(x => x.key === k); rows.push({label:s.label, date:s.date, urls:await Promise.all(DIRS.map(([d]) => s.url(d)))}); }
+  const b = await compareImage(rows, !document.body.classList.contains('nogrid'));
+  if (compareURL) URL.revokeObjectURL(compareURL);
+  compareURL = URL.createObjectURL(b);
+  const a = document.createElement('a'); a.href = compareURL; a.download = `比較_${F.date}.jpg`; a.click();
 }
 
 /* ================= 設定 ================= */
@@ -692,6 +702,9 @@ function vSettings(){
       <div>申し送り：${(r.handover || []).map(esc).join('、') || '-'}</div><div>セルフケア：${(r.selfcare || []).map(esc).join('、') || '-'}</div></div>
       <button onclick="editRule('${r.id}')">編集</button><button class="danger" onclick="delRule('${r.id}')">削除</button></div></div>`).join('')}
     <button onclick="editRule()">＋ ルール追加</button></div>
+  <div class="card"><h2>エクセル・写真の書き出し（パソコンで見る用）</h2>
+    <p class="muted" style="margin-top:0">原本と同じ書式のエクセル（来院1回＝1シート、姿勢写真つき）と、写真・動画を、1人1フォルダにまとめたZIPファイルで書き出します。1人分だけなら、患者の画面からも書き出せます。<b style="color:var(--warn)">暗号化されない</b>ので、USBに移したらタブレットからは削除してください。</p>
+    <button class="primary" onclick="exportPatients(Object.keys(S.patients))">📤 全患者を書き出す</button></div>
   <div class="card"><h2>バックアップ（USB保管用）</h2>
     <p>最後のバックアップ：<b>${S.lastBackup ? new Date(S.lastBackup).toLocaleString('ja-JP') : 'まだありません'}</b>　<small id="usage"></small></p>
     <p class="muted">データはこのタブレットの中だけに暗号化して保存されています。故障・紛失に備えて、週1回程度バックアップを書き出し、USBメモリに移して保管してください。バックアップファイルも暗号化されているので、開くには同じPINが必要です。</p>
@@ -795,6 +808,201 @@ async function importBackup(inp){
   await metaSet('salt', unb64(o.salt)); await metaSet('check', {iv:unb64(o.check[0]), ct:unb64(o.check[1]).buffer});
   await metaSet('lastBackup', Date.parse(o.at));
   alert('復元しました。バックアップ作成時のPINで開いてください。'); lock();
+}
+
+/* ================= ZIP作成（無圧縮。外部ライブラリなしで端末内だけで作る） ================= */
+const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(u){ let c = 0xFFFFFFFF; for (let i = 0; i < u.length; i++) c = CRC_T[(c ^ u[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+function dosTime(){ const t = new Date(); return {time:(t.getHours() << 11) | (t.getMinutes() << 5) | (t.getSeconds() >> 1), date:((t.getFullYear() - 1980) << 9) | ((t.getMonth() + 1) << 5) | t.getDate()}; }
+class ZipWriter {
+  constructor(sink){ this.sink = sink; this.off = 0; this.cd = []; this.d = dosTime(); }
+  async add(name, data){
+    const u = typeof data === 'string' ? enc.encode(data) : new Uint8Array(data), nm = enc.encode(name), crc = crc32(u), h = new DataView(new ArrayBuffer(30));
+    h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x0800, true);   // 0x0800 = ファイル名はUTF-8（日本語名の文字化け防止）
+    h.setUint16(10, this.d.time, true); h.setUint16(12, this.d.date, true); h.setUint32(14, crc, true);
+    h.setUint32(18, u.length, true); h.setUint32(22, u.length, true); h.setUint16(26, nm.length, true);
+    this.cd.push({nm, crc, size:u.length, off:this.off});
+    await this.sink(new Uint8Array(h.buffer)); await this.sink(nm); await this.sink(u);
+    this.off += 30 + nm.length + u.length;
+  }
+  async finish(){
+    let size = 0;
+    for (const e of this.cd) {
+      const h = new DataView(new ArrayBuffer(46));
+      h.setUint32(0, 0x02014b50, true); h.setUint16(4, 20, true); h.setUint16(6, 20, true); h.setUint16(8, 0x0800, true);
+      h.setUint16(12, this.d.time, true); h.setUint16(14, this.d.date, true); h.setUint32(16, e.crc, true);
+      h.setUint32(20, e.size, true); h.setUint32(24, e.size, true); h.setUint16(28, e.nm.length, true); h.setUint32(42, e.off, true);
+      await this.sink(new Uint8Array(h.buffer)); await this.sink(e.nm); size += 46 + e.nm.length;
+    }
+    const z = new DataView(new ArrayBuffer(22));
+    z.setUint32(0, 0x06054b50, true); z.setUint16(8, this.cd.length, true); z.setUint16(10, this.cd.length, true);
+    z.setUint32(12, size, true); z.setUint32(16, this.off, true);
+    await this.sink(new Uint8Array(z.buffer));
+  }
+}
+const memZip = () => { const parts = []; return {zip:new ZipWriter(async u => { parts.push(u); }), blob:type => new Blob(parts, {type})}; };
+
+/* ================= エクセル（原本の書式で、来院1回＝1シート） ================= */
+const XLSX_TPL = {"styles":"\u003c?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?\u003e\r\n\u003cstyleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\" mc:Ignorable=\"x14ac x16r2 xr\" xmlns:x14ac=\"http://schemas.microsoft.com/office/spreadsheetml/2009/9/ac\" xmlns:x16r2=\"http://schemas.microsoft.com/office/spreadsheetml/2015/02/main\" xmlns:xr=\"http://schemas.microsoft.com/office/spreadsheetml/2014/revision\"\u003e\u003cfonts count=\"5\" x14ac:knownFonts=\"1\"\u003e\u003cfont\u003e\u003csz val=\"10\"/\u003e\u003ccolor rgb=\"FF000000\"/\u003e\u003cname val=\"Arial\"/\u003e\u003cscheme val=\"minor\"/\u003e\u003c/font\u003e\u003cfont\u003e\u003csz val=\"6\"/\u003e\u003cname val=\"Arial\"/\u003e\u003cfamily val=\"3\"/\u003e\u003ccharset val=\"128\"/\u003e\u003cscheme val=\"minor\"/\u003e\u003c/font\u003e\u003cfont\u003e\u003csz val=\"10\"/\u003e\u003ccolor theme=\"1\"/\u003e\u003cname val=\"BIZ UDゴシック\"/\u003e\u003cfamily val=\"3\"/\u003e\u003ccharset val=\"128\"/\u003e\u003c/font\u003e\u003cfont\u003e\u003csz val=\"10\"/\u003e\u003ccolor rgb=\"FF000000\"/\u003e\u003cname val=\"BIZ UDゴシック\"/\u003e\u003cfamily val=\"3\"/\u003e\u003ccharset val=\"128\"/\u003e\u003c/font\u003e\u003cfont\u003e\u003csz val=\"6\"/\u003e\u003ccolor rgb=\"FF000000\"/\u003e\u003cname val=\"BIZ UDゴシック\"/\u003e\u003cfamily val=\"3\"/\u003e\u003ccharset val=\"128\"/\u003e\u003c/font\u003e\u003c/fonts\u003e\u003cfills count=\"3\"\u003e\u003cfill\u003e\u003cpatternFill patternType=\"none\"/\u003e\u003c/fill\u003e\u003cfill\u003e\u003cpatternFill patternType=\"gray125\"/\u003e\u003c/fill\u003e\u003cfill\u003e\u003cpatternFill patternType=\"solid\"\u003e\u003cfgColor theme=\"9\" tint=\"0.79998168889431442\"/\u003e\u003cbgColor indexed=\"64\"/\u003e\u003c/patternFill\u003e\u003c/fill\u003e\u003c/fills\u003e\u003cborders count=\"2\"\u003e\u003cborder\u003e\u003cleft/\u003e\u003cright/\u003e\u003ctop/\u003e\u003cbottom/\u003e\u003cdiagonal/\u003e\u003c/border\u003e\u003cborder\u003e\u003cleft style=\"thin\"\u003e\u003ccolor indexed=\"64\"/\u003e\u003c/left\u003e\u003cright style=\"thin\"\u003e\u003ccolor indexed=\"64\"/\u003e\u003c/right\u003e\u003ctop style=\"thin\"\u003e\u003ccolor indexed=\"64\"/\u003e\u003c/top\u003e\u003cbottom style=\"thin\"\u003e\u003ccolor indexed=\"64\"/\u003e\u003c/bottom\u003e\u003cdiagonal/\u003e\u003c/border\u003e\u003c/borders\u003e\u003ccellStyleXfs count=\"1\"\u003e\u003cxf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/\u003e\u003c/cellStyleXfs\u003e\u003ccellXfs count=\"13\"\u003e\u003cxf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/\u003e\u003cxf numFmtId=\"0\" fontId=\"3\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\"/\u003e\u003cxf numFmtId=\"0\" fontId=\"2\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\" applyAlignment=\"1\"\u003e\u003calignment horizontal=\"center\" vertical=\"center\"/\u003e\u003c/xf\u003e\u003cxf numFmtId=\"0\" fontId=\"3\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\" applyAlignment=\"1\"\u003e\u003calignment horizontal=\"center\" vertical=\"center\"/\u003e\u003c/xf\u003e\u003cxf numFmtId=\"0\" fontId=\"3\" fillId=\"2\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"\u003e\u003calignment horizontal=\"center\" vertical=\"center\"/\u003e\u003c/xf\u003e\u003cxf numFmtId=\"0\" fontId=\"3\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyBorder=\"1\"/\u003e\u003cxf numFmtId=\"0\" fontId=\"3\" fillId=\"2\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"\u003e\u003calignment horizontal=\"center\" vertical=\"center\" textRotation=\"255\"/\u003e\u003c/xf\u003e\u003cxf numFmtId=\"0\" fontId=\"3\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\" applyAlignment=\"1\"\u003e\u003calignment vertical=\"top\" wrapText=\"1\"/\u003e\u003c/xf\u003e\u003cxf numFmtId=\"0\" fontId=\"3\" fillId=\"2\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"\u003e\u003calignment vertical=\"top\" wrapText=\"1\"/\u003e\u003c/xf\u003e\u003cxf numFmtId=\"0\" fontId=\"3\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyBorder=\"1\" applyAlignment=\"1\"\u003e\u003calignment vertical=\"top\" wrapText=\"1\"/\u003e\u003c/xf\u003e\u003cxf numFmtId=\"0\" fontId=\"4\" fillId=\"2\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"\u003e\u003calignment horizontal=\"center\" vertical=\"center\" wrapText=\"1\"/\u003e\u003c/xf\u003e\u003cxf numFmtId=\"0\" fontId=\"3\" fillId=\"2\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"\u003e\u003calignment horizontal=\"center\" vertical=\"center\" wrapText=\"1\"/\u003e\u003c/xf\u003e\u003cxf numFmtId=\"0\" fontId=\"3\" fillId=\"2\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"\u003e\u003calignment horizontal=\"left\" vertical=\"top\" wrapText=\"1\"/\u003e\u003c/xf\u003e\u003c/cellXfs\u003e\u003ccellStyles count=\"1\"\u003e\u003ccellStyle name=\"標準\" xfId=\"0\" builtinId=\"0\"/\u003e\u003c/cellStyles\u003e\u003cdxfs count=\"0\"/\u003e\u003ctableStyles count=\"0\" defaultTableStyle=\"TableStyleMedium2\" defaultPivotStyle=\"PivotStyleLight16\"/\u003e\u003cextLst\u003e\u003cext uri=\"{EB79DEF2-80B8-43e5-95BD-54CBDDF9020C}\" xmlns:x14=\"http://schemas.microsoft.com/office/spreadsheetml/2009/9/main\"\u003e\u003cx14:slicerStyles defaultSlicerStyle=\"SlicerStyleLight1\"/\u003e\u003c/ext\u003e\u003cext uri=\"{9260A510-F301-46a8-8635-F512D64BE5F5}\" xmlns:x15=\"http://schemas.microsoft.com/office/spreadsheetml/2010/11/main\"\u003e\u003cx15:timelineStyles defaultTimelineStyle=\"TimeSlicerStyleLight1\"/\u003e\u003c/ext\u003e\u003c/extLst\u003e\u003c/styleSheet\u003e","theme":"\u003c?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?\u003e\r\n\u003ca:theme xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" name=\"Sheets\"\u003e\u003ca:themeElements\u003e\u003ca:clrScheme name=\"Sheets\"\u003e\u003ca:dk1\u003e\u003ca:srgbClr val=\"000000\"/\u003e\u003c/a:dk1\u003e\u003ca:lt1\u003e\u003ca:srgbClr val=\"FFFFFF\"/\u003e\u003c/a:lt1\u003e\u003ca:dk2\u003e\u003ca:srgbClr val=\"000000\"/\u003e\u003c/a:dk2\u003e\u003ca:lt2\u003e\u003ca:srgbClr val=\"FFFFFF\"/\u003e\u003c/a:lt2\u003e\u003ca:accent1\u003e\u003ca:srgbClr val=\"4285F4\"/\u003e\u003c/a:accent1\u003e\u003ca:accent2\u003e\u003ca:srgbClr val=\"EA4335\"/\u003e\u003c/a:accent2\u003e\u003ca:accent3\u003e\u003ca:srgbClr val=\"FBBC04\"/\u003e\u003c/a:accent3\u003e\u003ca:accent4\u003e\u003ca:srgbClr val=\"34A853\"/\u003e\u003c/a:accent4\u003e\u003ca:accent5\u003e\u003ca:srgbClr val=\"FF6D01\"/\u003e\u003c/a:accent5\u003e\u003ca:accent6\u003e\u003ca:srgbClr val=\"46BDC6\"/\u003e\u003c/a:accent6\u003e\u003ca:hlink\u003e\u003ca:srgbClr val=\"1155CC\"/\u003e\u003c/a:hlink\u003e\u003ca:folHlink\u003e\u003ca:srgbClr val=\"1155CC\"/\u003e\u003c/a:folHlink\u003e\u003c/a:clrScheme\u003e\u003ca:fontScheme name=\"Sheets\"\u003e\u003ca:majorFont\u003e\u003ca:latin typeface=\"Arial\"/\u003e\u003ca:ea typeface=\"Arial\"/\u003e\u003ca:cs typeface=\"Arial\"/\u003e\u003c/a:majorFont\u003e\u003ca:minorFont\u003e\u003ca:latin typeface=\"Arial\"/\u003e\u003ca:ea typeface=\"Arial\"/\u003e\u003ca:cs typeface=\"Arial\"/\u003e\u003c/a:minorFont\u003e\u003c/a:fontScheme\u003e\u003ca:fmtScheme name=\"Office\"\u003e\u003ca:fillStyleLst\u003e\u003ca:solidFill\u003e\u003ca:schemeClr val=\"phClr\"/\u003e\u003c/a:solidFill\u003e\u003ca:gradFill rotWithShape=\"1\"\u003e\u003ca:gsLst\u003e\u003ca:gs pos=\"0\"\u003e\u003ca:schemeClr val=\"phClr\"\u003e\u003ca:lumMod val=\"110000\"/\u003e\u003ca:satMod val=\"105000\"/\u003e\u003ca:tint val=\"67000\"/\u003e\u003c/a:schemeClr\u003e\u003c/a:gs\u003e\u003ca:gs pos=\"50000\"\u003e\u003ca:schemeClr val=\"phClr\"\u003e\u003ca:lumMod val=\"105000\"/\u003e\u003ca:satMod val=\"103000\"/\u003e\u003ca:tint val=\"73000\"/\u003e\u003c/a:schemeClr\u003e\u003c/a:gs\u003e\u003ca:gs pos=\"100000\"\u003e\u003ca:schemeClr val=\"phClr\"\u003e\u003ca:lumMod val=\"105000\"/\u003e\u003ca:satMod val=\"109000\"/\u003e\u003ca:tint val=\"81000\"/\u003e\u003c/a:schemeClr\u003e\u003c/a:gs\u003e\u003c/a:gsLst\u003e\u003ca:lin ang=\"5400000\" scaled=\"0\"/\u003e\u003c/a:gradFill\u003e\u003ca:gradFill rotWithShape=\"1\"\u003e\u003ca:gsLst\u003e\u003ca:gs pos=\"0\"\u003e\u003ca:schemeClr val=\"phClr\"\u003e\u003ca:satMod val=\"103000\"/\u003e\u003ca:lumMod val=\"102000\"/\u003e\u003ca:tint val=\"94000\"/\u003e\u003c/a:schemeClr\u003e\u003c/a:gs\u003e\u003ca:gs pos=\"50000\"\u003e\u003ca:schemeClr val=\"phClr\"\u003e\u003ca:satMod val=\"110000\"/\u003e\u003ca:lumMod val=\"100000\"/\u003e\u003ca:shade val=\"100000\"/\u003e\u003c/a:schemeClr\u003e\u003c/a:gs\u003e\u003ca:gs pos=\"100000\"\u003e\u003ca:schemeClr val=\"phClr\"\u003e\u003ca:lumMod val=\"99000\"/\u003e\u003ca:satMod val=\"120000\"/\u003e\u003ca:shade val=\"78000\"/\u003e\u003c/a:schemeClr\u003e\u003c/a:gs\u003e\u003c/a:gsLst\u003e\u003ca:lin ang=\"5400000\" scaled=\"0\"/\u003e\u003c/a:gradFill\u003e\u003c/a:fillStyleLst\u003e\u003ca:lnStyleLst\u003e\u003ca:ln w=\"6350\" cap=\"flat\" cmpd=\"sng\" algn=\"ctr\"\u003e\u003ca:solidFill\u003e\u003ca:schemeClr val=\"phClr\"/\u003e\u003c/a:solidFill\u003e\u003ca:prstDash val=\"solid\"/\u003e\u003ca:miter lim=\"800000\"/\u003e\u003c/a:ln\u003e\u003ca:ln w=\"12700\" cap=\"flat\" cmpd=\"sng\" algn=\"ctr\"\u003e\u003ca:solidFill\u003e\u003ca:schemeClr val=\"phClr\"/\u003e\u003c/a:solidFill\u003e\u003ca:prstDash val=\"solid\"/\u003e\u003ca:miter lim=\"800000\"/\u003e\u003c/a:ln\u003e\u003ca:ln w=\"19050\" cap=\"flat\" cmpd=\"sng\" algn=\"ctr\"\u003e\u003ca:solidFill\u003e\u003ca:schemeClr val=\"phClr\"/\u003e\u003c/a:solidFill\u003e\u003ca:prstDash val=\"solid\"/\u003e\u003ca:miter lim=\"800000\"/\u003e\u003c/a:ln\u003e\u003c/a:lnStyleLst\u003e\u003ca:effectStyleLst\u003e\u003ca:effectStyle\u003e\u003ca:effectLst/\u003e\u003c/a:effectStyle\u003e\u003ca:effectStyle\u003e\u003ca:effectLst/\u003e\u003c/a:effectStyle\u003e\u003ca:effectStyle\u003e\u003ca:effectLst\u003e\u003ca:outerShdw blurRad=\"57150\" dist=\"19050\" dir=\"5400000\" algn=\"ctr\" rotWithShape=\"0\"\u003e\u003ca:srgbClr val=\"000000\"\u003e\u003ca:alpha val=\"63000\"/\u003e\u003c/a:srgbClr\u003e\u003c/a:outerShdw\u003e\u003c/a:effectLst\u003e\u003c/a:effectStyle\u003e\u003c/a:effectStyleLst\u003e\u003ca:bgFillStyleLst\u003e\u003ca:solidFill\u003e\u003ca:schemeClr val=\"phClr\"/\u003e\u003c/a:solidFill\u003e\u003ca:solidFill\u003e\u003ca:schemeClr val=\"phClr\"\u003e\u003ca:tint val=\"95000\"/\u003e\u003ca:satMod val=\"170000\"/\u003e\u003c/a:schemeClr\u003e\u003c/a:solidFill\u003e\u003ca:gradFill rotWithShape=\"1\"\u003e\u003ca:gsLst\u003e\u003ca:gs pos=\"0\"\u003e\u003ca:schemeClr val=\"phClr\"\u003e\u003ca:tint val=\"93000\"/\u003e\u003ca:satMod val=\"150000\"/\u003e\u003ca:shade val=\"98000\"/\u003e\u003ca:lumMod val=\"102000\"/\u003e\u003c/a:schemeClr\u003e\u003c/a:gs\u003e\u003ca:gs pos=\"50000\"\u003e\u003ca:schemeClr val=\"phClr\"\u003e\u003ca:tint val=\"98000\"/\u003e\u003ca:satMod val=\"130000\"/\u003e\u003ca:shade val=\"90000\"/\u003e\u003ca:lumMod val=\"103000\"/\u003e\u003c/a:schemeClr\u003e\u003c/a:gs\u003e\u003ca:gs pos=\"100000\"\u003e\u003ca:schemeClr val=\"phClr\"\u003e\u003ca:shade val=\"63000\"/\u003e\u003ca:satMod val=\"120000\"/\u003e\u003c/a:schemeClr\u003e\u003c/a:gs\u003e\u003c/a:gsLst\u003e\u003ca:lin ang=\"5400000\" scaled=\"0\"/\u003e\u003c/a:gradFill\u003e\u003c/a:bgFillStyleLst\u003e\u003c/a:fmtScheme\u003e\u003c/a:themeElements\u003e\u003ca:objectDefaults/\u003e\u003ca:extraClrSchemeLst/\u003e\u003c/a:theme\u003e","sst":"\u003c?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?\u003e\r\n\u003csst xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" count=\"22\" uniqueCount=\"8\"\u003e\u003csi\u003e\u003ct\u003e日時\u003c/t\u003e\u003crPh sb=\"0\" eb=\"2\"\u003e\u003ct\u003eニチジ\u003c/t\u003e\u003c/rPh\u003e\u003cphoneticPr fontId=\"1\"/\u003e\u003c/si\u003e\u003csi\u003e\u003ct\u003eS\u003c/t\u003e\u003cphoneticPr fontId=\"1\"/\u003e\u003c/si\u003e\u003csi\u003e\u003ct\u003eO\u003c/t\u003e\u003cphoneticPr fontId=\"1\"/\u003e\u003c/si\u003e\u003csi\u003e\u003ct\u003eA\u003c/t\u003e\u003cphoneticPr fontId=\"1\"/\u003e\u003c/si\u003e\u003csi\u003e\u003ct\u003eP\u003c/t\u003e\u003cphoneticPr fontId=\"1\"/\u003e\u003c/si\u003e\u003csi\u003e\u003ct\u003e備考\u003c/t\u003e\u003crPh sb=\"0\" eb=\"2\"\u003e\u003ct\u003eビコウ\u003c/t\u003e\u003c/rPh\u003e\u003cphoneticPr fontId=\"1\"/\u003e\u003c/si\u003e\u003csi\u003e\u003ct\u003eセルフケア\u003c/t\u003e\u003cphoneticPr fontId=\"1\"/\u003e\u003c/si\u003e\u003csi\u003e\u003ct\u003e生年月日/性別\u003c/t\u003e\u003crPh sb=\"0\" eb=\"4\"\u003e\u003ct\u003eセイネンガッピ\u003c/t\u003e\u003c/rPh\u003e\u003crPh sb=\"5\" eb=\"7\"\u003e\u003ct\u003eセイベツ\u003c/t\u003e\u003c/rPh\u003e\u003cphoneticPr fontId=\"1\"/\u003e\u003c/si\u003e\u003c/sst\u003e","sheet1":"\u003c?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?\u003e\r\n\u003cworksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\" mc:Ignorable=\"x14ac xr xr2 xr3\" xmlns:x14ac=\"http://schemas.microsoft.com/office/spreadsheetml/2009/9/ac\" xmlns:xr=\"http://schemas.microsoft.com/office/spreadsheetml/2014/revision\" xmlns:xr2=\"http://schemas.microsoft.com/office/spreadsheetml/2015/revision2\" xmlns:xr3=\"http://schemas.microsoft.com/office/spreadsheetml/2016/revision3\" xr:uid=\"{00000000-0001-0000-0000-000000000000}\"\u003e\u003csheetPr\u003e\u003coutlinePr summaryBelow=\"0\" summaryRight=\"0\"/\u003e\u003c/sheetPr\u003e\u003cdimension ref=\"A1:C8\"/\u003e\u003csheetViews\u003e\u003csheetView tabSelected=\"1\" zoomScale=\"110\" zoomScaleNormal=\"110\" workbookViewId=\"0\"\u003e\u003cselection activeCell=\"B2\" sqref=\"B2\"/\u003e\u003c/sheetView\u003e\u003c/sheetViews\u003e\u003csheetFormatPr defaultColWidth=\"12.6640625\" defaultRowHeight=\"15.75\" customHeight=\"1\" x14ac:dyDescent=\"0.15\"/\u003e\u003ccols\u003e\u003ccol min=\"1\" max=\"1\" width=\"5.21875\" style=\"3\" customWidth=\"1\"/\u003e\u003ccol min=\"2\" max=\"2\" width=\"76.44140625\" style=\"7\" customWidth=\"1\"/\u003e\u003ccol min=\"3\" max=\"3\" width=\"31.77734375\" style=\"1\" customWidth=\"1\"/\u003e\u003ccol min=\"4\" max=\"16384\" width=\"12.6640625\" style=\"1\"/\u003e\u003c/cols\u003e\u003csheetData\u003e\u003crow r=\"1\" spans=\"1:3\" ht=\"15.75\" customHeight=\"1\" x14ac:dyDescent=\"0.15\"\u003e\u003cc r=\"A1\" s=\"2\"/\u003e\u003cc r=\"C1\" s=\"3\"/\u003e\u003c/row\u003e\u003crow r=\"2\" spans=\"1:3\" ht=\"22.8\" customHeight=\"1\" x14ac:dyDescent=\"0.15\"\u003e\u003cc r=\"A2\" s=\"4\" t=\"s\"\u003e\u003cv\u003e0\u003c/v\u003e\u003c/c\u003e\u003cc r=\"B2\" s=\"12\"/\u003e\u003cc r=\"C2\" s=\"4\" t=\"s\"\u003e\u003cv\u003e5\u003c/v\u003e\u003c/c\u003e\u003c/row\u003e\u003crow r=\"3\" spans=\"1:3\" ht=\"22.8\" customHeight=\"1\" x14ac:dyDescent=\"0.15\"\u003e\u003cc r=\"A3\" s=\"10\" t=\"s\"\u003e\u003cv\u003e7\u003c/v\u003e\u003c/c\u003e\u003cc r=\"B3\" s=\"11\"/\u003e\u003cc r=\"C3\" s=\"4\"/\u003e\u003c/row\u003e\u003crow r=\"4\" spans=\"1:3\" ht=\"64.2\" customHeight=\"1\" x14ac:dyDescent=\"0.15\"\u003e\u003cc r=\"A4\" s=\"4\" t=\"s\"\u003e\u003cv\u003e1\u003c/v\u003e\u003c/c\u003e\u003cc r=\"B4\" s=\"9\"/\u003e\u003cc r=\"C4\" s=\"5\"/\u003e\u003c/row\u003e\u003crow r=\"5\" spans=\"1:3\" ht=\"72.599999999999994\" customHeight=\"1\" x14ac:dyDescent=\"0.15\"\u003e\u003cc r=\"A5\" s=\"4\" t=\"s\"\u003e\u003cv\u003e2\u003c/v\u003e\u003c/c\u003e\u003cc r=\"B5\" s=\"9\"/\u003e\u003cc r=\"C5\" s=\"5\"/\u003e\u003c/row\u003e\u003crow r=\"6\" spans=\"1:3\" ht=\"55.8\" customHeight=\"1\" x14ac:dyDescent=\"0.15\"\u003e\u003cc r=\"A6\" s=\"4\" t=\"s\"\u003e\u003cv\u003e3\u003c/v\u003e\u003c/c\u003e\u003cc r=\"B6\" s=\"9\"/\u003e\u003cc r=\"C6\" s=\"5\"/\u003e\u003c/row\u003e\u003crow r=\"7\" spans=\"1:3\" ht=\"84.6\" customHeight=\"1\" x14ac:dyDescent=\"0.15\"\u003e\u003cc r=\"A7\" s=\"4\" t=\"s\"\u003e\u003cv\u003e4\u003c/v\u003e\u003c/c\u003e\u003cc r=\"B7\" s=\"9\"/\u003e\u003cc r=\"C7\" s=\"5\"/\u003e\u003c/row\u003e\u003crow r=\"8\" spans=\"1:3\" ht=\"156.6\" customHeight=\"1\" x14ac:dyDescent=\"0.15\"\u003e\u003cc r=\"A8\" s=\"6\" t=\"s\"\u003e\u003cv\u003e6\u003c/v\u003e\u003c/c\u003e\u003cc r=\"B8\" s=\"9\"/\u003e\u003cc r=\"C8\" s=\"5\"/\u003e\u003c/row\u003e\u003c/sheetData\u003e\u003cphoneticPr fontId=\"1\"/\u003e\u003cpageMargins left=\"0.7\" right=\"0.7\" top=\"0.75\" bottom=\"0.75\" header=\"0.3\" footer=\"0.3\"/\u003e\u003cdrawing r:id=\"rId1\"/\u003e\u003c/worksheet\u003e","sheet2":"\u003c?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?\u003e\r\n\u003cworksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\" mc:Ignorable=\"x14ac xr xr2 xr3\" xmlns:x14ac=\"http://schemas.microsoft.com/office/spreadsheetml/2009/9/ac\" xmlns:xr=\"http://schemas.microsoft.com/office/spreadsheetml/2014/revision\" xmlns:xr2=\"http://schemas.microsoft.com/office/spreadsheetml/2015/revision2\" xmlns:xr3=\"http://schemas.microsoft.com/office/spreadsheetml/2016/revision3\" xr:uid=\"{59F0DFFA-D5AF-4C71-A9BC-BE3D210D8241}\"\u003e\u003csheetPr\u003e\u003coutlinePr summaryBelow=\"0\" summaryRight=\"0\"/\u003e\u003c/sheetPr\u003e\u003cdimension ref=\"A1:C7\"/\u003e\u003csheetViews\u003e\u003csheetView topLeftCell=\"A5\" zoomScale=\"104\" zoomScaleNormal=\"110\" workbookViewId=\"0\"\u003e\u003cselection activeCell=\"B12\" sqref=\"B12\"/\u003e\u003c/sheetView\u003e\u003c/sheetViews\u003e\u003csheetFormatPr defaultColWidth=\"12.6640625\" defaultRowHeight=\"15.75\" customHeight=\"1\" x14ac:dyDescent=\"0.15\"/\u003e\u003ccols\u003e\u003ccol min=\"1\" max=\"1\" width=\"5.21875\" style=\"3\" customWidth=\"1\"/\u003e\u003ccol min=\"2\" max=\"2\" width=\"76.44140625\" style=\"7\" customWidth=\"1\"/\u003e\u003ccol min=\"3\" max=\"3\" width=\"31.77734375\" style=\"1\" customWidth=\"1\"/\u003e\u003ccol min=\"4\" max=\"16384\" width=\"12.6640625\" style=\"1\"/\u003e\u003c/cols\u003e\u003csheetData\u003e\u003crow r=\"1\" spans=\"1:3\" ht=\"15.75\" customHeight=\"1\" x14ac:dyDescent=\"0.15\"\u003e\u003cc r=\"A1\" s=\"2\"/\u003e\u003cc r=\"C1\" s=\"3\"/\u003e\u003c/row\u003e\u003crow r=\"2\" spans=\"1:3\" ht=\"22.8\" customHeight=\"1\" x14ac:dyDescent=\"0.15\"\u003e\u003cc r=\"A2\" s=\"4\" t=\"s\"\u003e\u003cv\u003e0\u003c/v\u003e\u003c/c\u003e\u003cc r=\"B2\" s=\"8\"/\u003e\u003cc r=\"C2\" s=\"4\" t=\"s\"\u003e\u003cv\u003e5\u003c/v\u003e\u003c/c\u003e\u003c/row\u003e\u003crow r=\"3\" spans=\"1:3\" ht=\"64.2\" customHeight=\"1\" x14ac:dyDescent=\"0.15\"\u003e\u003cc r=\"A3\" s=\"4\" t=\"s\"\u003e\u003cv\u003e1\u003c/v\u003e\u003c/c\u003e\u003cc r=\"B3\" s=\"9\"/\u003e\u003cc r=\"C3\" s=\"5\"/\u003e\u003c/row\u003e\u003crow r=\"4\" spans=\"1:3\" ht=\"72.599999999999994\" customHeight=\"1\" x14ac:dyDescent=\"0.15\"\u003e\u003cc r=\"A4\" s=\"4\" t=\"s\"\u003e\u003cv\u003e2\u003c/v\u003e\u003c/c\u003e\u003cc r=\"B4\" s=\"9\"/\u003e\u003cc r=\"C4\" s=\"5\"/\u003e\u003c/row\u003e\u003crow r=\"5\" spans=\"1:3\" ht=\"55.8\" customHeight=\"1\" x14ac:dyDescent=\"0.15\"\u003e\u003cc r=\"A5\" s=\"4\" t=\"s\"\u003e\u003cv\u003e3\u003c/v\u003e\u003c/c\u003e\u003cc r=\"B5\" s=\"9\"/\u003e\u003cc r=\"C5\" s=\"5\"/\u003e\u003c/row\u003e\u003crow r=\"6\" spans=\"1:3\" ht=\"84.6\" customHeight=\"1\" x14ac:dyDescent=\"0.15\"\u003e\u003cc r=\"A6\" s=\"4\" t=\"s\"\u003e\u003cv\u003e4\u003c/v\u003e\u003c/c\u003e\u003cc r=\"B6\" s=\"9\"/\u003e\u003cc r=\"C6\" s=\"5\"/\u003e\u003c/row\u003e\u003crow r=\"7\" spans=\"1:3\" ht=\"159\" customHeight=\"1\" x14ac:dyDescent=\"0.15\"\u003e\u003cc r=\"A7\" s=\"6\" t=\"s\"\u003e\u003cv\u003e6\u003c/v\u003e\u003c/c\u003e\u003cc r=\"B7\" s=\"9\"/\u003e\u003cc r=\"C7\" s=\"5\"/\u003e\u003c/row\u003e\u003c/sheetData\u003e\u003cphoneticPr fontId=\"1\"/\u003e\u003cpageMargins left=\"0.7\" right=\"0.7\" top=\"0.75\" bottom=\"0.75\" header=\"0.3\" footer=\"0.3\"/\u003e\u003cdrawing r:id=\"rId1\"/\u003e\u003c/worksheet\u003e","drawing1":"\u003c?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?\u003e\r\n\u003cxdr:wsDr xmlns:xdr=\"http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"\u003e\u003cxdr:twoCellAnchor editAs=\"oneCell\"\u003e\u003cxdr:from\u003e\u003cxdr:col\u003e5\u003c/xdr:col\u003e\u003cxdr:colOff\u003e429490\u003c/xdr:colOff\u003e\u003cxdr:row\u003e3\u003c/xdr:row\u003e\u003cxdr:rowOff\u003e117763\u003c/xdr:rowOff\u003e\u003c/xdr:from\u003e\u003cxdr:to\u003e\u003cxdr:col\u003e8\u003c/xdr:col\u003e\u003cxdr:colOff\u003e579659\u003c/xdr:colOff\u003e\u003cxdr:row\u003e6\u003c/xdr:row\u003e\u003cxdr:rowOff\u003e732182\u003c/xdr:rowOff\u003e\u003c/xdr:to\u003e\u003cxdr:pic\u003e\u003cxdr:nvPicPr\u003e\u003cxdr:cNvPr id=\"2\" name=\"図 1\" descr=\"問診票イラスト｜無料イラスト・フリー素材なら「イラストAC」\"\u003e\u003ca:extLst\u003e\u003ca:ext uri=\"{FF2B5EF4-FFF2-40B4-BE49-F238E27FC236}\"\u003e\u003ca16:creationId xmlns:a16=\"http://schemas.microsoft.com/office/drawing/2014/main\" id=\"{F6FEEBDA-F85D-4D28-A0F6-1D64286F6D88}\"/\u003e\u003c/a:ext\u003e\u003c/a:extLst\u003e\u003c/xdr:cNvPr\u003e\u003cxdr:cNvPicPr\u003e\u003ca:picLocks noChangeAspect=\"1\" noChangeArrowheads=\"1\"/\u003e\u003c/xdr:cNvPicPr\u003e\u003c/xdr:nvPicPr\u003e\u003cxdr:blipFill\u003e\u003ca:blip xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" r:embed=\"rId1\"\u003e\u003ca:extLst\u003e\u003ca:ext uri=\"{28A0092B-C50C-407E-A947-70E740481C1C}\"\u003e\u003ca14:useLocalDpi xmlns:a14=\"http://schemas.microsoft.com/office/drawing/2010/main\" val=\"0\"/\u003e\u003c/a:ext\u003e\u003c/a:extLst\u003e\u003c/a:blip\u003e\u003ca:srcRect/\u003e\u003ca:stretch\u003e\u003ca:fillRect/\u003e\u003c/a:stretch\u003e\u003c/xdr:blipFill\u003e\u003cxdr:spPr bwMode=\"auto\"\u003e\u003ca:xfrm\u003e\u003ca:off x=\"9137072\" y=\"519545\"/\u003e\u003ca:ext cx=\"2747896\" cy=\"3059746\"/\u003e\u003c/a:xfrm\u003e\u003ca:prstGeom prst=\"rect\"\u003e\u003ca:avLst/\u003e\u003c/a:prstGeom\u003e\u003ca:noFill/\u003e\u003ca:extLst\u003e\u003ca:ext uri=\"{909E8E84-426E-40DD-AFC4-6F175D3DCCD1}\"\u003e\u003ca14:hiddenFill xmlns:a14=\"http://schemas.microsoft.com/office/drawing/2010/main\"\u003e\u003ca:solidFill\u003e\u003ca:srgbClr val=\"FFFFFF\"/\u003e\u003c/a:solidFill\u003e\u003c/a14:hiddenFill\u003e\u003c/a:ext\u003e\u003c/a:extLst\u003e\u003c/xdr:spPr\u003e\u003c/xdr:pic\u003e\u003cxdr:clientData/\u003e\u003c/xdr:twoCellAnchor\u003e\u003c/xdr:wsDr\u003e","drawing2":"\u003c?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?\u003e\r\n\u003cxdr:wsDr xmlns:xdr=\"http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"\u003e\u003cxdr:twoCellAnchor editAs=\"oneCell\"\u003e\u003cxdr:from\u003e\u003cxdr:col\u003e4\u003c/xdr:col\u003e\u003cxdr:colOff\u003e159326\u003c/xdr:colOff\u003e\u003cxdr:row\u003e2\u003c/xdr:row\u003e\u003cxdr:rowOff\u003e55417\u003c/xdr:rowOff\u003e\u003c/xdr:from\u003e\u003cxdr:to\u003e\u003cxdr:col\u003e7\u003c/xdr:col\u003e\u003cxdr:colOff\u003e464127\u003c/xdr:colOff\u003e\u003cxdr:row\u003e5\u003c/xdr:row\u003e\u003cxdr:rowOff\u003e669835\u003c/xdr:rowOff\u003e\u003c/xdr:to\u003e\u003cxdr:pic\u003e\u003cxdr:nvPicPr\u003e\u003cxdr:cNvPr id=\"2\" name=\"図 1\" descr=\"問診票イラスト｜無料イラスト・フリー素材なら「イラストAC」\"\u003e\u003ca:extLst\u003e\u003ca:ext uri=\"{FF2B5EF4-FFF2-40B4-BE49-F238E27FC236}\"\u003e\u003ca16:creationId xmlns:a16=\"http://schemas.microsoft.com/office/drawing/2014/main\" id=\"{74AEF306-00C2-45FB-87EA-3ACB4710264B}\"/\u003e\u003c/a:ext\u003e\u003c/a:extLst\u003e\u003c/xdr:cNvPr\u003e\u003cxdr:cNvPicPr\u003e\u003ca:picLocks noChangeAspect=\"1\" noChangeArrowheads=\"1\"/\u003e\u003c/xdr:cNvPicPr\u003e\u003c/xdr:nvPicPr\u003e\u003cxdr:blipFill\u003e\u003ca:blip xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" r:embed=\"rId1\"\u003e\u003ca:extLst\u003e\u003ca:ext uri=\"{28A0092B-C50C-407E-A947-70E740481C1C}\"\u003e\u003ca14:useLocalDpi xmlns:a14=\"http://schemas.microsoft.com/office/drawing/2010/main\" val=\"0\"/\u003e\u003c/a:ext\u003e\u003c/a:extLst\u003e\u003c/a:blip\u003e\u003ca:srcRect/\u003e\u003ca:stretch\u003e\u003ca:fillRect/\u003e\u003c/a:stretch\u003e\u003c/xdr:blipFill\u003e\u003cxdr:spPr bwMode=\"auto\"\u003e\u003ca:xfrm\u003e\u003ca:off x=\"8811490\" y=\"547253\"/\u003e\u003ca:ext cx=\"2902528\" cy=\"3059746\"/\u003e\u003c/a:xfrm\u003e\u003ca:prstGeom prst=\"rect\"\u003e\u003ca:avLst/\u003e\u003c/a:prstGeom\u003e\u003ca:noFill/\u003e\u003ca:extLst\u003e\u003ca:ext uri=\"{909E8E84-426E-40DD-AFC4-6F175D3DCCD1}\"\u003e\u003ca14:hiddenFill xmlns:a14=\"http://schemas.microsoft.com/office/drawing/2010/main\"\u003e\u003ca:solidFill\u003e\u003ca:srgbClr val=\"FFFFFF\"/\u003e\u003c/a:solidFill\u003e\u003c/a14:hiddenFill\u003e\u003c/a:ext\u003e\u003c/a:extLst\u003e\u003c/xdr:spPr\u003e\u003c/xdr:pic\u003e\u003cxdr:clientData/\u003e\u003c/xdr:twoCellAnchor\u003e\u003c/xdr:wsDr\u003e"};
+const xmlEsc = s => String(s ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const strW = s => [...s].reduce((n, c) => n + (c.charCodeAt(0) > 255 ? 2 : 1), 0);
+const SHEET_NAMES = ['初回','②','③','④','⑤','⑥','⑦','⑧','⑨','⑩','⑪','⑫','⑬','⑭','⑮','⑯','⑰','⑱','⑲','⑳'];
+const NOTE_STYLE = 9;   // 備考欄は原本では折り返しなしなので、折り返しありの記入欄と同じ書式にする
+function fillCell(xml, ref, text, style){
+  if (!text) return xml;
+  return xml.replace(new RegExp(`<c r="${ref}" s="(\\d+)"/>`), (m, s) => `<c r="${ref}" s="${style || s}" t="inlineStr"><is><t xml:space="preserve">${xmlEsc(text)}</t></is></c>`);
+}
+function fitRow(xml, r, cells){   // 文字量に合わせて行の高さを広げる（原本の高さより低くはしない）
+  const need = Math.max(...cells.map(([t, w]) => String(t || '').split('\n').reduce((n, l) => n + Math.max(1, Math.ceil(strW(l) / w)), 0)));
+  return xml.replace(new RegExp(`(<row r="${r}"[^>]*? ht=")([\\d.]+)"`), (m, a, h) => `${a}${Math.max(+h, need * 15 + 8).toFixed(1)}"`);
+}
+function visitCells(v){
+  const treat = (v.tags || []).filter(t => (S.cfg.tags['施術'] || []).includes(t));
+  const obs = (v.tags || []).filter(t => !treat.includes(t));
+  const media = Object.keys(v.media || {});
+  return {
+    date: fmtDate(v.date) + (v.draft ? '（下書き）' : ''),
+    S: v.S,
+    O: [v.O, obs.length ? '【部位・所見】' + obs.join('、') : ''].filter(Boolean).join('\n'),
+    A: v.A,
+    P: [v.P, treat.length ? '【施術】' + treat.join('、') : '', (v.handover || []).length ? '【次回への申し送り】\n' + v.handover.map(x => '・' + x).join('\n') : ''].filter(Boolean).join('\n'),
+    self: (v.selfcare || []).map(x => '・' + x).join('\n'),
+    note: [v.note, hasPain(v) ? `痛み：${v.pain}/10` : '', media.length ? `写真：${media.length}枚` : '', (v.videos || []).length ? `動画：${v.videos.length}本` : ''].filter(Boolean).join('\n')
+  };
+}
+async function chartPng(strokes){
+  const img = await new Promise(res => { const im = new Image(); im.onload = () => res(im); im.src = BODY_IMG; });
+  const c = document.createElement('canvas'); c.width = img.width * 2; c.height = img.height * 2; const g = c.getContext('2d');
+  g.drawImage(img, 0, 0, c.width, c.height);
+  g.strokeStyle = 'rgba(215,30,30,.9)'; g.lineWidth = Math.max(3, c.width / 140); g.lineCap = g.lineJoin = 'round';
+  for (const s of strokes || []) { g.beginPath(); s.forEach(([x, y], i) => i ? g.lineTo(x * c.width, y * c.height) : g.moveTo(x * c.width, y * c.height));
+    if (s.length === 1) g.lineTo(s[0][0] * c.width + 0.5, s[0][1] * c.height); g.stroke(); }
+  return (await new Promise(res => c.toBlob(res, 'image/png'))).arrayBuffer();
+}
+const loadImg = u => new Promise(res => { if (!u) return res(null); const im = new Image(); im.onload = () => res(im); im.onerror = () => res(null); im.src = u; });
+// 原本にはない「姿勢写真」欄。セルフケア欄の下に、施術前・施術後ごとに 正面・右・背面・左 の順で並べる
+const PH_BOX = {w:180, h:240, gap:10, colB:553};   // 写真1枚の枠（px）と、B列の幅（px）
+async function photoRows(v, startRow){
+  let r = startRow, xml = ''; const pics = [];
+  for (const [ph, pl] of PHASES) {
+    const ids = DIRS.map(([d]) => (v.media || {})[ph + '_' + d]); if (!ids.some(Boolean)) continue;
+    xml += `<row r="${r}" ht="21" customHeight="1"><c r="B${r}" s="7" t="inlineStr"><is><t xml:space="preserve">${xmlEsc(`姿勢写真　${pl}（左から 正面・右・背面・左）`)}</t></is></c></row>`;
+    r++;
+    xml += `<row r="${r}" ht="${(PH_BOX.h + 16) * 0.75}" customHeight="1"/>`;
+    for (let i = 0; i < 4; i++) {
+      const img = await loadImg(await mediaURL(ids[i])); if (!img) continue;
+      const sc = Math.min(PH_BOX.w / img.width, PH_BOX.h / img.height), w = Math.round(img.width * sc), h = Math.round(img.height * sc);
+      const x = i * (PH_BOX.w + PH_BOX.gap) + Math.round((PH_BOX.w - w) / 2);
+      pics.push({col:x < PH_BOX.colB ? 1 : 2, off:(x < PH_BOX.colB ? x : x - PH_BOX.colB) * 9525, row:r - 1, cx:w * 9525, cy:h * 9525,
+        buf:await (await toJpeg(img, img.width, img.height, 900)).arrayBuffer()});
+    }
+    r++;
+  }
+  return {xml, pics};
+}
+const picAnchor = (p, n) => `<xdr:oneCellAnchor><xdr:from><xdr:col>${p.col}</xdr:col><xdr:colOff>${p.off}</xdr:colOff><xdr:row>${p.row}</xdr:row><xdr:rowOff>76200</xdr:rowOff></xdr:from><xdr:ext cx="${p.cx}" cy="${p.cy}"/><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${n + 10}" name="写真 ${n}"/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr><xdr:blipFill><a:blip xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:embed="rId${n + 1}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${p.cx}" cy="${p.cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:oneCellAnchor>`;
+async function buildXlsx(p){
+  const vs = visitsOf(p.id).slice().reverse();
+  const sheets = vs.length ? vs : [null];
+  const age = p.birth ? Math.floor((new Date(vs[0]?.date ? vs[0].date + 'T00:00' : Date.now()) - new Date(p.birth + 'T00:00')) / 31557600000) : null;
+  const birth = [p.birth ? `${fmtDate(p.birth)}（${age}歳）` : '', p.sex].filter(Boolean).join('／');
+  const {zip, blob} = memZip();
+  const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships', PR = 'http://schemas.openxmlformats.org/package/2006/relationships';
+  for (let i = 0; i < sheets.length; i++) {
+    const first = i === 0, v = sheets[i], c = v ? visitCells(v) : {};
+    let x = (first ? XLSX_TPL.sheet1 : XLSX_TPL.sheet2).replace(/ topLeftCell="[A-Z]+\d+"/, '').replace(/ tabSelected="1"/, '');
+    if (first) x = x.replace('<sheetView ', '<sheetView tabSelected="1" ');
+    const o = first ? 1 : 0;   // 初回シートは「生年月日/性別」の行がある分、1行下がる
+    x = fillCell(x, 'B2', c.date);
+    if (first) x = fillCell(x, 'B3', birth);
+    x = fillCell(x, `B${3 + o}`, c.S); x = fillCell(x, `B${4 + o}`, c.O); x = fillCell(x, `B${5 + o}`, c.A);
+    x = fillCell(x, `B${6 + o}`, c.P); x = fillCell(x, `B${7 + o}`, c.self); x = fillCell(x, `C${3 + o}`, c.note, NOTE_STYLE);
+    x = fitRow(x, 3 + o, [[c.S, 74], [c.note, 30]]);
+    [[4, c.O], [5, c.A], [6, c.P], [7, c.self]].forEach(([r, t]) => { x = fitRow(x, r + o, [[t, 74]]); });
+    const ph = v ? await photoRows(v, 9 + o) : {xml:'', pics:[]};   // セルフケア欄の1行下から
+    x = x.replace('</sheetData>', ph.xml + '</sheetData>').replace(/<dimension ref="[^"]*"\/>/, '');
+    await zip.add(`xl/worksheets/sheet${i + 1}.xml`, x);
+    await zip.add(`xl/worksheets/_rels/sheet${i + 1}.xml.rels`, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="${PR}"><Relationship Id="rId1" Type="${R}/drawing" Target="../drawings/drawing${i + 1}.xml"/></Relationships>`);
+    await zip.add(`xl/drawings/drawing${i + 1}.xml`, (first ? XLSX_TPL.drawing1 : XLSX_TPL.drawing2).replace('</xdr:wsDr>', ph.pics.map((q, n) => picAnchor(q, n + 1)).join('') + '</xdr:wsDr>'));
+    await zip.add(`xl/drawings/_rels/drawing${i + 1}.xml.rels`, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="${PR}"><Relationship Id="rId1" Type="${R}/image" Target="../media/image${i + 1}.png"/>${ph.pics.map((q, n) => `<Relationship Id="rId${n + 2}" Type="${R}/image" Target="../media/photo${i + 1}_${n + 1}.jpeg"/>`).join('')}</Relationships>`);
+    await zip.add(`xl/media/image${i + 1}.png`, await chartPng(v && v.chart));
+    for (let n = 0; n < ph.pics.length; n++) await zip.add(`xl/media/photo${i + 1}_${n + 1}.jpeg`, ph.pics[n].buf);
+  }
+  const n = sheets.length, ids = [...Array(n).keys()];
+  await zip.add('xl/workbook.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="${R}"><bookViews><workbookView/></bookViews><sheets>${ids.map(i => `<sheet name="${xmlEsc(SHEET_NAMES[i] || `${i + 1}回目`)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets></workbook>`);
+  await zip.add('xl/_rels/workbook.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="${PR}">${ids.map(i => `<Relationship Id="rId${i + 1}" Type="${R}/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${n + 1}" Type="${R}/styles" Target="styles.xml"/><Relationship Id="rId${n + 2}" Type="${R}/theme" Target="theme/theme1.xml"/><Relationship Id="rId${n + 3}" Type="${R}/sharedStrings" Target="sharedStrings.xml"/></Relationships>`);
+  await zip.add('xl/styles.xml', XLSX_TPL.styles); await zip.add('xl/theme/theme1.xml', XLSX_TPL.theme); await zip.add('xl/sharedStrings.xml', XLSX_TPL.sst);
+  const CT = 'application/vnd.openxmlformats-officedocument';
+  await zip.add('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Default Extension="jpeg" ContentType="image/jpeg"/><Override PartName="/xl/workbook.xml" ContentType="${CT}.spreadsheetml.sheet.main+xml"/>${ids.map(i => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="${CT}.spreadsheetml.worksheet+xml"/><Override PartName="/xl/drawings/drawing${i + 1}.xml" ContentType="${CT}.drawing+xml"/>`).join('')}<Override PartName="/xl/theme/theme1.xml" ContentType="${CT}.theme+xml"/><Override PartName="/xl/styles.xml" ContentType="${CT}.spreadsheetml.styles+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="${CT}.spreadsheetml.sharedStrings+xml"/></Types>`);
+  await zip.add('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="${PR}"><Relationship Id="rId1" Type="${R}/officeDocument" Target="xl/workbook.xml"/></Relationships>`);
+  await zip.finish();
+  return blob('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet').arrayBuffer();
+}
+
+/* ================= エクセル・写真の書き出し（1人1フォルダのZIP） ================= */
+let exportURL = null, busy = false;
+const safeName = s => String(s || '').replace(/[\\/:*?"<>|\u0000-\u001F]/g, '').trim().slice(0, 40);
+async function mediaBuf(id){ const e = await tx('data', 'readonly', s => s.get('m:' + id)); return e ? decBuf(e) : null; }
+async function openSink(name){
+  let bytes = 0;
+  if (window.showSaveFilePicker) {
+    try {
+      const h = await showSaveFilePicker({suggestedName:name, types:[{description:'ZIPファイル', accept:{'application/zip':['.zip']}}]});
+      const ws = await h.createWritable();
+      return {sink: async u => { bytes += u.length; await ws.write(u); }, close: async () => { await ws.close(); return {where:'選んだ場所', size:bytes}; }};
+    } catch (e) { if (e.name === 'AbortError') return null; }
+  }
+  const parts = [];
+  return {sink: async u => { parts.push(u); }, close: async () => {
+    const blob = new Blob(parts, {type:'application/zip'});
+    if (exportURL) URL.revokeObjectURL(exportURL);
+    exportURL = URL.createObjectURL(blob);   // ダウンロード開始が遅れても中身が消えないよう、次の書き出しまで保持
+    const a = document.createElement('a'); a.href = exportURL; a.download = name; a.click();
+    return {where:'「ダウンロード」フォルダ', size:blob.size};
+  }};
+}
+async function exportPatients(ids){
+  if (!ids.length) return toast('患者が登録されていません');
+  if (!confirm('エクセル・写真・動画を書き出します。\n\n書き出したファイルは暗号化されません。USBメモリに移したら、タブレットの「ダウンロード」からは削除してください。')) return;
+  const one = ids.length === 1, name = `${one ? safeName(S.patients[ids[0]].name) || '患者' : '全患者'}_カルテ_${today()}.zip`;
+  const w = await openSink(name); if (!w) return toast('キャンセルしました');
+  busy = true;
+  openModal(`<h3 style="margin-top:0">書き出しています…</h3><p id="prog">準備中</p><p class="muted">終わるまでアプリを閉じないでください。</p>`);
+  try {
+    const zip = new ZipWriter(w.sink), used = new Set();
+    for (let i = 0; i < ids.length; i++) {
+      const p = S.patients[ids[i]]; let dir = safeName(p.name) || '名前なし';
+      while (used.has(dir)) dir += '_2'; used.add(dir);
+      $('#prog').textContent = `${i + 1} / ${ids.length} 人目：${p.name} 様`;
+      await zip.add(`${dir}/カルテ_${dir}.xlsx`, await buildXlsx(p));
+      for (const v of visitsOf(p.id).slice().reverse()) {
+        for (const [ph] of PHASES) for (const [d, dl] of DIRS) {
+          const id = (v.media || {})[ph + '_' + d]; if (!id) continue;
+          const b = await mediaBuf(id); if (b) await zip.add(`${dir}/写真/${v.date}_${phaseLabel(ph)}_${dl}.jpg`, b);
+        }
+        if (DIRS.some(([d]) => v.media?.['pre_' + d]) && DIRS.some(([d]) => v.media?.['post_' + d])) {
+          const rows = []; for (const [ph, pl] of PHASES) rows.push({label:pl, date:v.date, urls:await Promise.all(DIRS.map(([d]) => mediaURL(v.media['' + ph + '_' + d])))});
+          await zip.add(`${dir}/写真/${v.date}_施術前後の比較.jpg`, await (await compareImage(rows, true)).arrayBuffer());
+        }
+        let k = 0;
+        for (const x of (v.videos || [])) {
+          const b = await mediaBuf(x.id); if (!b) continue;
+          const ext = ((x.type || '').split('/')[1] || 'mp4').replace('quicktime', 'mov');
+          await zip.add(`${dir}/動画/${v.date}_${phaseLabel(x.phase)}_${++k}${x.memo ? '_' + safeName(x.memo) : ''}.${ext}`, b);
+        }
+      }
+    }
+    await zip.finish();
+    const r = await w.close();
+    openModal(`<h3 style="margin-top:0">書き出しました</h3><p>ファイル名：<b>${esc(name)}</b><br>大きさ：<b>約${fmtSize(r.size)}</b>（${r.where}）</p>
+      <p>ダウンロード完了の通知が出るまで、アプリを閉じずにお待ちください。<br>
+      パソコンでは、ZIPファイルを右クリック →「<b>すべて展開</b>」で、1人1フォルダ（カルテのエクセル・写真・動画）になります。</p>
+      <p style="color:var(--warn)">このファイルは暗号化されていません。USBメモリに移したら、タブレットの「ダウンロード」からは削除してください。</p>
+      <button class="primary" onclick="closeModal()">閉じる</button>`);
+  } catch (e) {
+    console.error(e);
+    openModal(`<h3 style="margin-top:0">⚠ 書き出しに失敗しました</h3><p>${esc(e.message || e)}</p><p class="muted">空き容量が足りない場合は、1人ずつ書き出してください。</p><button class="primary" onclick="closeModal()">閉じる</button>`);
+  } finally { busy = false; resetIdle(); }
 }
 
 /* ================= 起動 ================= */
