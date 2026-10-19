@@ -696,6 +696,7 @@ function vSettings(){
     <p>最後のバックアップ：<b>${S.lastBackup ? new Date(S.lastBackup).toLocaleString('ja-JP') : 'まだありません'}</b>　<small id="usage"></small></p>
     <p class="muted">データはこのタブレットの中だけに暗号化して保存されています。故障・紛失に備えて、週1回程度バックアップを書き出し、USBメモリに移して保管してください。バックアップファイルも暗号化されているので、開くには同じPINが必要です。</p>
     <div class="row"><button class="primary" onclick="exportBackup()">バックアップを書き出す</button>
+    ${fileInput('バックアップファイルを確認', `accept=".json,application/json" onchange="verifyBackup(this)"`)}
     ${fileInput('バックアップから復元', `accept=".json,application/json" onchange="importBackup(this)"`)}</div></div>`;
 }
 async function showUsage(){ try { const e = await navigator.storage.estimate(); const el = $('#usage'); if (el) el.textContent = `（使用量 約${Math.round(e.usage / 1e6)}MB）`; } catch (e) {} }
@@ -743,10 +744,46 @@ async function exportBackup(){
     parts.push((i ? ',' : '') + JSON.stringify([keys[i], b64(r.iv), b64(r.ct), r.type || null, r.bin ? 1 : 0]));
   }
   parts.push(']}');
-  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(parts, {type:'application/json'}));
-  a.download = `chodo-karte-backup-${today()}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  const blob = new Blob(parts, {type:'application/json'}), name = `chodo-karte-backup-${today()}.json`, mb = fmtSize(blob.size);
+  let where = '「ダウンロード」フォルダ';
+  if (window.showSaveFilePicker) {   // 保存先を選べる端末では、USBメモリに直接保存できる
+    try {
+      const h = await showSaveFilePicker({suggestedName:name, types:[{description:'カルテのバックアップ', accept:{'application/json':['.json']}}]});
+      const w = await h.createWritable(); await w.write(blob); await w.close(); where = '選んだ場所';
+    } catch (e) { if (e.name === 'AbortError') return toast('キャンセルしました'); where = null; }
+  } else where = null;
+  if (!where) {
+    // ダウンロードの開始が遅れても中身が消えないよう、次の書き出しまでURLを保持する
+    if (backupURL) URL.revokeObjectURL(backupURL);
+    backupURL = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = backupURL; a.download = name; a.click();
+    where = '「ダウンロード」フォルダ';
+  }
   S.lastBackup = Date.now(); await metaSet('lastBackup', S.lastBackup);
-  toast('「ダウンロード」に保存しました。USBメモリに移してください'); if (view.name === 'settings') render();
+  if (view.name === 'settings') render();
+  openModal(`<h3 style="margin-top:0">バックアップを書き出しました</h3>
+    <p>ファイル名：<b>${name}</b><br>大きさ：<b>約${mb}</b>（${where}）</p>
+    <p>ダウンロード完了の通知が出るまで、アプリを閉じずにお待ちください。<br>
+    USBメモリに移したあとは、「バックアップファイルを確認」でUSB内のファイルを選ぶと、正しく保存できたか確認できます。</p>
+    <p class="muted">USBメモリは、通知欄などから「取り外し」をしてから抜いてください。いきなり抜くと、ファイルが空になることがあります。</p>
+    <div class="row"><button class="primary" onclick="closeModal()">閉じる</button></div>`);
+}
+let backupURL = null;
+const fmtSize = n => n < 1e6 ? Math.max(1, Math.round(n / 1e3)) + 'KB' : (n / 1e6).toFixed(1) + 'MB';
+async function verifyBackup(inp){
+  const f = inp.files[0]; inp.value = ''; if (!f) return;
+  const mb = fmtSize(f.size);
+  if (!f.size) return openModal(`<h3 style="margin-top:0">⚠ ファイルが空です</h3><p>このファイル（${esc(f.name)}）は0バイトです。もう一度書き出して、USBに移し直してください。</p><button class="primary" onclick="closeModal()">閉じる</button>`);
+  let o; try { o = JSON.parse(await f.text()); if (o.app !== APP_DB) throw 0; }
+  catch (e) { return openModal(`<h3 style="margin-top:0">⚠ 読み取れません</h3><p>このファイルは壊れているか、このアプリのバックアップではありません（${mb}）。もう一度書き出してください。</p><button class="primary" onclick="closeModal()">閉じる</button>`); }
+  const n = p => o.data.filter(d => d[0].startsWith(p)).length;
+  let pinOk = false;
+  try { pinOk = b64(await metaGet('salt')) === o.salt && !!(await decObj({iv:unb64(o.check[0]), ct:unb64(o.check[1]).buffer})); } catch (e) {}
+  openModal(`<h3 style="margin-top:0">✔ 正常なバックアップです</h3>
+    <p>作成日時：<b>${new Date(o.at).toLocaleString('ja-JP')}</b>（${mb}）<br>
+    患者 <b>${n('p:')}</b>人・カルテ <b>${n('v:')}</b>件・写真/動画 <b>${n('m:')}</b>件</p>
+    <p>${pinOk ? '今のPINで復元できます。' : '今とは別のPINで作られたバックアップです。復元には作成時のPINが必要です。'}</p>
+    <button class="primary" onclick="closeModal()">閉じる</button>`);
 }
 async function importBackup(inp){
   const f = inp.files[0]; inp.value = ''; if (!f) return;
