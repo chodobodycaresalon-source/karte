@@ -93,6 +93,28 @@ body.nogrid .ph .gridov{display:none}
 .banner{background:var(--note);border:1px solid var(--note-line);border-radius:10px;padding:8px 12px;font-size:15px;margin-bottom:12px}
 .badge{display:inline-block;background:var(--warn);color:#fff;border-radius:6px;padding:0 8px;font-size:13px}
 .painv{font-weight:700;color:var(--accent)}
+.consent{max-width:820px;margin:0 auto;font-size:18px}
+.consent .ck{display:flex;gap:12px;align-items:flex-start;padding:12px;border:1px solid var(--line);border-radius:12px;margin:8px 0;cursor:pointer}
+.consent .ck input{width:30px;height:30px;flex:none;margin-top:2px}
+.sigwrap{border:2px dashed var(--accent);border-radius:12px;background:#fff;height:220px;position:relative}
+.sigwrap canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none}
+.sigwrap .ph-text{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#c9bcb8;font-size:22px;pointer-events:none}
+.okline{color:#1e7a46;font-weight:600}
+main.cust{max-width:900px}
+.steps{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
+.steps span{flex:1;min-width:110px;text-align:center;padding:8px;border-radius:10px;background:var(--chip);color:var(--muted);font-size:15px}
+.steps span.on{background:var(--accent);color:#fff;font-weight:700}
+.steps span.done{background:var(--accent-weak);color:var(--accent)}
+.intake{font-size:18px}
+.intake .chip{min-height:50px;font-size:17px;padding:8px 18px}
+.intake label.f{font-size:16px}
+.qblock{padding:14px 0;border-top:1px solid var(--line)}
+.qblock .q{font-weight:700;margin-bottom:8px;background:#f6ecea;border-radius:8px;padding:6px 10px}
+.qblock .other{margin-top:8px}
+dl.isum{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:0}
+dl.isum dt{color:var(--muted);font-size:14px}
+dl.isum dd{margin:0}
+details.card summary{cursor:pointer;list-style-position:outside}
 </style>
 </head>
 <body>
@@ -105,18 +127,18 @@ body.nogrid .ph .gridov{display:none}
 const DEFAULT_CFG = {
   shopName: 'BODY CARE SALON ちょうど',
   lockMin: 5,
-  tags: {
-    '部位': ['頸部','肩','胸椎','腰部','骨盤','股関節','膝','足首'],
-    '所見': ['骨盤前傾','骨盤後傾','猫背','ストレートネック','反り腰','左右差','可動域制限'],
-    '施術': ['手技','ストレッチ','骨盤調整','筋膜リリース','運動指導']
-  },
-  rules: [
-    {id:'r1', when:['腰部'], handover:['SLRを再評価','体幹前屈（指床間距離）を再評価'], selfcare:['キャットカウ','膝抱えストレッチ'], memo:'サンプル'},
-    {id:'r2', when:['骨盤前傾','反り腰'], handover:['骨盤傾斜を側面写真で確認','トーマステストを再評価'], selfcare:['ヒップリフト','腸腰筋ストレッチ'], memo:'サンプル'},
-    {id:'r3', when:['猫背','ストレートネック'], handover:['頭部前方位を側面写真で確認','頸部回旋の可動域を再評価'], selfcare:['チンタック','タオルで胸椎伸展'], memo:'サンプル'},
-    {id:'r4', when:['肩'], handover:['肩関節 屈曲・外転の可動域を再評価'], selfcare:['壁スライド','肩甲骨回し'], memo:'サンプル'},
-    {id:'r5', when:['膝'], handover:['膝 屈曲・伸展の可動域を再評価','片脚スクワット時のニーインを確認'], selfcare:['浅めのスクワット','大腿四頭筋ストレッチ'], memo:'サンプル'}
-  ]
+  // 以前の版でカルテに付けていたタグの分類（エクセル書き出しで「施術」を P 欄に回すために使う）
+  tags: {'施術': ['手技','ストレッチ','骨盤調整','筋膜リリース','運動指導']},
+  // 同意書（紙の問診票の同意3項目＋統計利用）。文面を変えると版(ver)が上がり、どの版に署名したか記録される
+  consent: {
+    ver: 1,
+    items: [
+      '当店の施術は医療行為ではなく、治療・診断を目的としたものではないことを理解しています',
+      '体調や痛みについては、状況次第では医療機関の受診を勧められることを理解しています',
+      '施術中に違和感や不安があれば、すぐに伝えることに同意します',
+      'ご記入いただいた情報は、施術・サービス向上・統計分析のために利用し、個人が特定できる形で外部に提供しないことを理解し、同意します'
+    ]
+  }
 };
 const APP_DB = 'chodo-karte';
 const DIRS = [['front','正面'],['right','右'],['back','背面'],['left','左']];
@@ -255,12 +277,19 @@ function go(name, params = {}){
 function render(){
   if (!KEY) return renderLock();
   const on = n => (view.name === n || (n === 'list' && ['patient','pform','visit'].includes(view.name))) ? 'on' : '';
-  const body = {list:vList, pform:vPForm, patient:vPatient, visit:vVisit, settings:vSettings}[view.name]();
-  $('#app').innerHTML = `<header><span class="t">${esc(S.cfg.shopName)}</span>
+  const body = {list:vList, pform:vPForm, patient:vPatient, visit:vVisit, settings:vSettings, intake:vIntake}[view.name]();
+  // お客様が記入している間は、他の方の情報に移動できるメニューを出さない
+  const customer = (view.name === 'intake' && !view.staff) || (view.name === 'pform' && view.intake);
+  $('#app').innerHTML = customer
+    ? `<header><span class="t">${esc(S.cfg.shopName)}</span><button onclick="staffReturn('${view.id || ''}')">スタッフ用</button></header><main class="cust">${body}</main>`
+    : `<header><span class="t">${esc(S.cfg.shopName)}</span>
     <button class="${on('list')}" onclick="go('list')">患者一覧</button>
     <button class="${on('settings')}" onclick="go('settings')">設定</button>
     <button onclick="lock()">🔒 ロック</button></header><main class="${view.name === 'visit' ? 'withbar' : ''}">${body}</main>`;
-  if (view.name === 'visit') { loadSlots(); initChart(); renderVideos(); }
+  if (view.name === 'visit') { loadSlots(); renderVideos(); loadIntakeCharts(); }
+  if (view.name === 'patient') loadIntakeCharts();
+  if (view.name === 'intake' && view.step === 2) initChart(IN.chart);
+  if (view.name === 'intake' && view.step === 3) initSig();
   if (view.name === 'settings') showUsage();
 }
 const visitsOf = pid => Object.values(S.visits).filter(v => v.pid === pid).sort((a, b) => (b.date + b.created).localeCompare(a.date + a.created));
@@ -276,48 +305,54 @@ function backupBanner(){
 function vList(){
   return `${backupBanner()}
   <div class="row" style="margin-bottom:12px"><input class="grow" placeholder="名前・ふりがな・電話で検索" value="${esc(view.q || '')}" oninput="view.q=this.value;$('#plist').innerHTML=listBody()">
-  <button class="primary" onclick="go('pform')">＋ 新規患者</button></div><div id="plist">${listBody()}</div>`;
+  <button class="primary" onclick="go('pform',{intake:true})">＋ 新規のお客様（お客様が記入）</button></div><div id="plist">${listBody()}</div>`;
 }
 function listBody(){
   const q = view.q || '';
   const ps = Object.values(S.patients).filter(p => !q || (p.name + (p.kana || '') + (p.phone || '')).includes(q))
     .sort((a, b) => (a.kana || a.name).localeCompare(b.kana || b.name, 'ja'));
-  if (!ps.length) return `<p class="muted">${q ? '該当する患者がいません' : '患者が登録されていません。「＋ 新規患者」から登録してください。'}</p>`;
+  if (!ps.length) return `<p class="muted">${q ? '該当する患者がいません' : '患者が登録されていません。「＋ 新規のお客様」を押してタブレットをお客様に渡すと、基本情報・問診票・同意書を記入してもらえます。'}</p>`;
   return `<div class="grid2">${ps.map(p => { const vs = visitsOf(p.id); const last = vs[0];
     return `<div class="card click" onclick="go('patient',{id:'${p.id}'})"><b style="font-size:19px">${esc(p.name)}</b> <small>${esc(p.kana)}</small>
     ${vs.some(v => v.draft) ? ' <span class="badge">下書きあり</span>' : ''}
+    ${(p.consents || []).length ? '' : ' <span class="badge">同意書なし</span>'}
     <div class="muted">${last ? `最終来院 ${fmtDate(last.date)}（${vs.length}回）` : '来院記録なし'}</div></div>`; }).join('')}</div>`;
 }
 
 /* ================= 患者登録・編集 ================= */
 function vPForm(){
-  const p = view.id ? S.patients[view.id] : {};
-  return `<div class="card"><h2>${view.id ? '患者情報の編集' : '新規患者'}</h2>
-  <p class="muted" style="margin:0">次の段階で、お客様がタブレットで入力する問診票からも自動で登録できるようにします。</p>
+  const p = view.id ? S.patients[view.id] : {}, cust = !!view.intake;
+  return `${cust ? stepBar(1) : ''}<div class="card ${cust ? 'intake' : ''}"><h2>${cust ? 'はじめにご記入ください' : view.id ? '患者情報の編集' : '新規患者'}</h2>
   <div class="grid2"><div>
-    <label class="f">氏名 *<input id="f_name" value="${esc(p.name)}"></label>
-    <label class="f">ふりがな<input id="f_kana" value="${esc(p.kana)}"></label>
-    <div class="row"><label class="f grow">生年月日<input id="f_birth" type="date" value="${esc(p.birth)}"></label>
-    <label class="f grow">性別<select id="f_sex">${['','女性','男性','その他','回答しない'].map(s => `<option ${p.sex === s ? 'selected' : ''}>${s}</option>`).join('')}</select></label></div>
+    <label class="f">お名前 *<input id="f_name" value="${esc(p.name)}" autocomplete="off"></label>
+    <label class="f">ふりがな<input id="f_kana" value="${esc(p.kana)}" autocomplete="off"></label>
+    <label class="f">生年月日<input id="f_birth" type="date" value="${esc(p.birth)}"></label>
+    <label class="f">性別</label><div class="chips" id="f_sex">${['女性','男性','その他','回答しない'].map(s => `<button class="chip ${p.sex === s ? 'on' : ''}" onclick="pickSex(this)">${s}</button>`).join('')}</div>
   </div><div>
-    <label class="f">携帯番号<input id="f_phone" type="tel" value="${esc(p.phone)}"></label>
-    <label class="f">住所<input id="f_addr" value="${esc(p.addr)}"></label>
-    <label class="f">メモ（既往歴・注意点など）<textarea id="f_memo" rows="3">${esc(p.memo)}</textarea></label>
+    <label class="f">携帯番号<input id="f_phone" type="tel" value="${esc(p.phone)}" autocomplete="off"></label>
+    <label class="f">郵便番号<input id="f_zip" inputmode="numeric" value="${esc(p.zip)}" placeholder="例：123-4567" autocomplete="off"></label>
+    <label class="f">ご住所<input id="f_addr" value="${esc(p.addr)}" autocomplete="off"></label>
+    ${cust ? '' : `<label class="f">スタッフ用メモ（注意点など）<textarea id="f_memo" rows="3">${esc(p.memo)}</textarea></label>`}
   </div></div>
-  <div class="row" style="margin-top:14px"><button class="primary" onclick="savePatient()">保存</button>
-  <button onclick="${view.id ? `go('patient',{id:'${view.id}'})` : `go('list')`}">キャンセル</button></div></div>`;
+  <div class="row" style="margin-top:16px">${cust ? '' : `<button onclick="${view.id ? `go('patient',{id:'${view.id}'})` : `go('list')`}">キャンセル</button>`}<span class="grow"></span>
+  <button class="primary big" onclick="savePatient()">${cust ? '保存して次へ' : '保存'}</button></div></div>`;
 }
+function pickSex(b){ document.querySelectorAll('#f_sex .chip').forEach(x => x.classList.toggle('on', x === b && !b.classList.contains('on'))); }
 async function savePatient(){
-  const name = $('#f_name').value.trim(); if (!name) return toast('氏名を入力してください');
-  const id = view.id || uid();
+  const name = $('#f_name').value.trim(); if (!name) return toast('お名前を入力してください');
+  const id = view.id || uid(), sex = $('#f_sex .chip.on');
   const p = Object.assign(S.patients[id] || {id, created:Date.now()}, {name, kana:$('#f_kana').value.trim(), birth:$('#f_birth').value,
-    sex:$('#f_sex').value, phone:$('#f_phone').value.trim(), addr:$('#f_addr').value.trim(), memo:$('#f_memo').value});
-  await dataPut('p:' + id, p); S.patients[id] = p; toast('保存しました'); go('patient', {id});
+    sex:sex ? sex.textContent : '', phone:$('#f_phone').value.trim(), zip:$('#f_zip').value.trim(), addr:$('#f_addr').value.trim()});
+  if ($('#f_memo')) p.memo = $('#f_memo').value;
+  await dataPut('p:' + id, p); S.patients[id] = p;
+  if (view.intake) return startIntake(id);   // お客様記入の流れ：次は問診票
+  toast('保存しました'); go('patient', {id});
 }
 async function deletePatient(id){
   const p = S.patients[id];
   if (!confirm(`${p.name} 様の患者情報と、すべてのカルテ・写真・動画を削除します。元に戻せません。よろしいですか？`)) return;
   for (const v of visitsOf(id)) await removeVisit(v);
+  for (const c of (p.consents || [])) await mediaDel(c.sig);
   await dataDel('p:' + id); delete S.patients[id]; toast('削除しました'); go('list');
 }
 
@@ -338,11 +373,17 @@ function vPatient(){
     <div class="muted">${[age !== null ? age + '歳' : '', p.sex, p.phone ? '☎ ' + esc(p.phone) : ''].filter(Boolean).join('　')}</div>
     ${p.memo ? `<div style="white-space:pre-wrap;margin-top:6px">${esc(p.memo)}</div>` : ''}
     ${trend.length > 1 ? `<div style="margin-top:6px">痛みの推移：<span class="painv">${trend.join(' → ')}</span></div>` : ''}
+    ${consentLine(p)}
     <div class="row" style="margin-top:10px"><button class="primary" onclick="newVisit('${p.id}')">＋ 今日のカルテ</button>
     <button onclick="go('pform',{id:'${p.id}'})">患者情報を編集</button>
     <button onclick="exportPatients(['${p.id}'])">📤 エクセル・写真を書き出す</button>
     <button class="danger" onclick="deletePatient('${p.id}')">削除</button></div></div>
   ${vs[0] ? summaryBox(vs[0], '次回来店時に確認すること') : ''}
+  ${p.intake ? `<details class="card"><summary><b>問診票（お客様記入 ${fmtDate(p.intake.date)}）</b>
+      <button style="min-height:36px;margin-left:8px" onclick="event.preventDefault();startIntake('${p.id}',true)">直す</button></summary>${intakeSummary(p)}</details>`
+    : `<div class="card"><b>問診票</b>：まだ記入されていません
+      <button class="primary" style="min-height:38px;margin-left:6px" onclick="startIntake('${p.id}')">📋 お客様に記入してもらう</button>
+      <button style="min-height:38px" onclick="startIntake('${p.id}',true)">スタッフが入力</button></div>`}
   <h3>来院履歴（${vs.length}回）</h3>
   ${vs.length ? vs.map(v => `<div class="card click" onclick="openVisit('${v.id}')"><div class="row"><b>${fmtDate(v.date)}</b>
     ${v.draft ? '<span class="badge">下書き</span>' : ''}
@@ -353,10 +394,171 @@ function vPatient(){
     <div class="muted">${esc((v.S || '').slice(0, 80))}</div></div>`).join('') : '<p class="muted">まだカルテがありません</p>'}`;
 }
 
+/* ================= 問診票（お客様がタブレットで記入。紙の問診票と同じチェック方式） ================= */
+const INTAKE = [
+  {k:'posture', s:'日常で多い姿勢・動作', t:'multi', q:'日常で多い姿勢・動作', o:['デスクワーク・携帯','立ち仕事','育児・家事'], other:true},
+  {k:'state', s:'今のお体の状態', t:'multi', q:'今のお体の状態で、あてはまるものを教えてください（複数選択可）', o:['痛みがある','重だるい','張りやコリを感じる','違和感がある','しびれがある','動かしにくい','姿勢改善がしたい','メンテナンス希望'], other:true},
+  {k:'since', s:'いつから', t:'single', q:'それはいつからですか', o:['慢性的','1か月以上','1週間以内']},
+  {k:'trigger', s:'考えられるきっかけ', t:'multi', q:'考えられるきっかけはありますか', o:['仕事','育児・家事','原因がわからない'], other:true},
+  {k:'chart', s:'気になる部位', t:'chart', q:'気になる部位を、指で丸く囲んでください'},
+  {k:'history', s:'既往歴・治療中の疾患', t:'yesmulti', q:'今までにかかった病気や手術、現在治療中の疾患はありますか', yes:'はい', no:'いいえ', sub:'「はい」の方は、あてはまるものを選んでください',
+    o:['高血圧','糖尿病','心臓病','腎臓病','肝臓病','自己免疫疾患','脳卒中','心療内科疾患','悪性腫瘍'], other:true},
+  {k:'visiting', s:'この症状で通院中', t:'single', q:'この症状で通院中ですか', o:['はい','いいえ']},
+  {k:'sleep', s:'平均睡眠時間', t:'single', q:'平均睡眠時間', o:['4時間以下','5時間','6時間','7時間','8時間','9時間以上']},
+  {k:'exercise', s:'運動習慣', t:'yesmulti', q:'運動習慣はありますか', yes:'あり', no:'なし', sub:'内容を選んでください', o:['ウォーキング','ランニング','筋トレ','ヨガ・ピラティス','ストレッチ','水泳','球技'], other:true},
+  {k:'experience', s:'受けたことがある施術', t:'multi', q:'これまでに施術を受けたことがあるものはありますか', o:['整骨院','鍼灸','整体・マッサージ','病院・整形外科','エステ','特になし']},
+  {k:'purpose', s:'希望・目的', t:'multi', q:'希望や目的を教えてください', o:['自分にあったセルフケアが知りたい','しっかりほぐしたい','痛みや不調の原因を知りたい','リラックスしたい'], other:true},
+  {k:'source', s:'当店を知ったきっかけ', t:'multi', q:'当店を知ったきっかけを教えてください', o:['Instagram','Google検索・マップ','ご紹介','チラシ','通りがかり','LINE','ホームページ'], other:true},
+  {k:'concern', s:'その他・伝えたいこと', t:'text', q:'上記以外に気になる点や、伝えておきたいことがございましたらご記入ください（任意）'}
+];
+let IN = null;   // 記入中の問診票
+function inField(f){
+  const v = IN[f.k], chip = (on, js, label) => `<button class="chip ${on ? 'on' : ''}" onclick="${js}">${esc(label)}</button>`;
+  const other = f.other ? `<input class="other" placeholder="その他（ご自由に）" value="${esc(IN[f.k + '_o'])}" oninput="IN['${f.k}_o']=this.value">` : '';
+  if (f.t === 'multi') return `<div class="chips">${f.o.map((o, i) => chip((v || []).includes(o), `inMulti('${f.k}',${i})`, o)).join('')}</div>${other}`;
+  if (f.t === 'single') return `<div class="chips">${f.o.map((o, i) => chip(v === o, `inSingle('${f.k}',${i})`, o)).join('')}</div>`;
+  if (f.t === 'yesmulti') return `<div class="chips">${chip(v === f.yes, `inYes('${f.k}',1)`, f.yes)}${chip(v === f.no, `inYes('${f.k}',0)`, f.no)}</div>
+    ${v === f.yes ? `<div class="sub">${esc(f.sub)}</div><div class="chips">${f.o.map((o, i) => chip((IN[f.k + '_list'] || []).includes(o), `inYesList('${f.k}',${i})`, o)).join('')}</div>${other}` : ''}`;
+  if (f.t === 'text') return `<textarea rows="3" oninput="IN['${f.k}']=this.value">${esc(v)}</textarea>`;
+  if (f.t === 'chart') return chartHTML();
+}
+const inF = k => INTAKE.find(f => f.k === k);
+const inRe = k => { $('#in_' + k).innerHTML = inField(inF(k)); };
+function inMulti(k, i){ const o = inF(k).o[i], a = IN[k] || []; IN[k] = a.includes(o) ? a.filter(x => x !== o) : [...a, o]; inRe(k); }
+function inSingle(k, i){ const o = inF(k).o[i]; IN[k] = IN[k] === o ? '' : o; inRe(k); }
+function inYes(k, y){ const f = inF(k); IN[k] = y ? f.yes : f.no; inRe(k); }
+function inYesList(k, i){ const o = inF(k).o[i], a = IN[k + '_list'] || []; IN[k + '_list'] = a.includes(o) ? a.filter(x => x !== o) : [...a, o]; inRe(k); }
+function inAnswer(f, I){
+  const o = I[f.k + '_o'] ? `その他（${I[f.k + '_o']}）` : '', v = I[f.k];
+  if (f.t === 'multi') return [...(v || []), o].filter(Boolean).join('、');
+  if (f.t === 'single' || f.t === 'text') return v || '';
+  if (f.t === 'yesmulti') { if (v !== f.yes) return v || ''; const d = [...(I[f.k + '_list'] || []), o].filter(Boolean).join('、'); return d ? `${f.yes}（${d}）` : f.yes; }
+  if (f.t === 'chart') return (I.chart || []).length ? '人体図に記入あり' : '';
+  return '';
+}
+const shortQ = f => f.s || f.q;
+function intakeText(I){   // AI相談・エクセル用（自由記入以外は選択肢だけなので個人は特定されない）
+  return INTAKE.filter(f => f.t !== 'chart').map(f => [shortQ(f), inAnswer(f, I)]).filter(([, a]) => a).map(([q, a]) => `${q}：${a}`).join('\n');
+}
+function intakeSummary(p){
+  const I = p.intake, rows = INTAKE.filter(f => f.t !== 'chart').map(f => [shortQ(f), inAnswer(f, I)]).filter(([, a]) => a);
+  return `<div class="grid2" style="margin-top:8px"><dl class="isum">${rows.map(([q, a]) => `<dt>${esc(q)}</dt><dd>${esc(a)}</dd>`).join('')}</dl>
+    ${(I.chart || []).length ? `<div><div class="muted">気になる部位</div><img class="ichart" data-pid="${p.id}" style="width:100%;max-width:320px;border:1px solid var(--line);border-radius:8px"></div>` : ''}</div>`;
+}
+async function loadIntakeCharts(){ for (const im of document.querySelectorAll('img.ichart')) im.src = await chartImageURL(S.patients[im.dataset.pid].intake.chart); }
+const STEPS = ['基本情報', '問診票', '同意・ご署名'];
+const stepBar = n => `<div class="steps">${STEPS.map((s, i) => `<span class="${i + 1 === n ? 'on' : i + 1 < n ? 'done' : ''}">${i + 1}. ${s}</span>`).join('')}</div>`;
+function vIntake(){
+  const p = S.patients[view.id];
+  if (view.step === 4) return `<div class="card" style="text-align:center;padding:40px 16px"><h2>ご記入ありがとうございました</h2>
+    <p style="font-size:19px">タブレットをスタッフにお渡しください。</p>
+    <button class="primary big" onclick="staffReturn('${p.id}')">スタッフ用（PIN）</button></div>`;
+  if (view.step === 3) return `${stepBar(3)}<div class="card">${consentHTML(p, true)}</div>`;
+  return `${view.staff ? '' : stepBar(2)}<div class="card intake"><h2>${view.staff ? `${esc(p.name)} 様の問診票` : '問診票'}</h2>
+    ${view.staff ? '' : '<p>あてはまるものをタップしてください。</p>'}
+    ${INTAKE.map(f => `<div class="qblock"><div class="q">${esc(f.q)}</div><div id="in_${f.k}">${inField(f)}</div></div>`).join('')}
+    <div class="row" style="margin-top:16px">${view.staff ? `<button onclick="go('patient',{id:'${p.id}'})">キャンセル</button>` : ''}<span class="grow"></span>
+    <button class="primary big" onclick="saveIntake()">${view.staff ? '保存' : '保存して次へ'}</button></div></div>`;
+}
+async function saveIntake(){
+  const p = S.patients[view.id];
+  p.intake = Object.assign({}, IN, {date:(p.intake && p.intake.date) || today(), at:Date.now()});
+  await dataPut('p:' + p.id, p);
+  if (view.staff) { toast('問診票を保存しました'); go('patient', {id:p.id}); }
+  else go('intake', {id:p.id, step:(lastConsent(p) && lastConsent(p).ver === S.cfg.consent.ver) ? 4 : 3});
+}
+function startIntake(pid, staff){ const p = S.patients[pid]; IN = structuredClone(p.intake || {}); IN.chart = IN.chart || []; go('intake', {id:pid, step:2, staff:!!staff}); }
+// お客様に渡している間は、スタッフ画面に戻るのにPINが必要
+function staffReturn(pid){
+  openModal(`<h3 style="margin-top:0">スタッフ確認</h3><p>PINを入力してください</p>
+    <input id="rpin" type="password" inputmode="numeric" autocomplete="off" onkeydown="if(event.key==='Enter')staffCheck('${pid || ''}')">
+    <p id="rerr" class="err"></p><div class="row"><button onclick="closeModal()">キャンセル</button><button class="primary" onclick="staffCheck('${pid || ''}')">スタッフ画面へ</button></div>`);
+  $('#rpin').focus();
+}
+async function staffCheck(pid){
+  try { const k = await deriveKey($('#rpin').value, await metaGet('salt')), c = await metaGet('check'); await crypto.subtle.decrypt({name:'AES-GCM', iv:c.iv}, k, c.ct); }
+  catch (e) { $('#rerr').textContent = 'PINが違います'; $('#rpin').value = ''; return; }
+  closeModal(); if (pid && S.patients[pid]) go('patient', {id:pid}); else go('list');
+}
+
+/* ================= 同意書（チェック＋画面署名） ================= */
+const lastConsent = p => (p.consents || [])[(p.consents || []).length - 1];
+function consentLine(p){
+  const c = lastConsent(p);
+  if (!c) return `<div class="err" style="margin-top:6px">⚠ 同意書（署名）がまだありません
+    <button class="primary" style="min-height:38px;margin-left:6px" onclick="startConsent('${p.id}')">✍ 同意書に署名してもらう</button></div>`;
+  return `<div style="margin-top:6px"><span class="okline">✔ 同意書 署名済（${fmtDate(c.date)}）</span>
+    <button style="min-height:36px;margin-left:6px" onclick="showConsent('${p.id}')">同意書を見る</button>
+    ${c.ver !== S.cfg.consent.ver ? `<div class="err">同意書の文面が変更されています。<button style="min-height:36px" onclick="startConsent('${p.id}')">新しい文面で署名してもらう</button></div>` : ''}</div>`;
+}
+let sigInk = false;
+function startConsent(pid){ openModal(consentHTML(S.patients[pid], false)); initSig(); }
+function consentHTML(p, inPage){
+  const pid = p.id, c = S.cfg.consent; sigInk = false;
+  return (`<div class="consent"><h2 style="margin-bottom:2px">同意について</h2><div class="muted">${esc(S.cfg.shopName)}</div>
+    <p>以下の内容をご確認のうえ、チェックをお願いします。</p>
+    ${c.items.map((t, i) => `<label class="ck"><input type="checkbox" class="csck" onchange="csUpdate()"><span>${esc(t)}</span></label>`).join('')}
+    <div class="sub" style="font-size:16px;margin-top:16px">ご署名（${esc(p.name)} 様）</div>
+    <div class="sigwrap"><canvas id="sigcv"></canvas><div class="ph-text" id="sigph">ここに指でお名前をお書きください</div></div>
+    <div class="row" style="margin-top:6px"><button onclick="sigClear()">書き直す</button><span class="grow"></span><span>日付：${fmtDate(today())}</span></div>
+    <div class="row" style="margin-top:16px">${inPage ? `<button onclick="startIntake('${pid}')">← 問診票に戻る</button>` : '<button onclick="closeModal()">やめる</button>'}<span class="grow"></span>
+    <button class="primary big" id="csok" disabled onclick="saveConsent('${pid}')">同意して署名する</button></div></div>`);
+}
+function initSig(){
+  const cv = $('#sigcv'), r = cv.getBoundingClientRect(), dpr = devicePixelRatio || 1;
+  cv.width = r.width * dpr; cv.height = r.height * dpr;
+  const g = cv.getContext('2d'); g.scale(dpr, dpr); g.lineWidth = 3; g.lineCap = g.lineJoin = 'round'; g.strokeStyle = '#1a1a1a';
+  let drawing = false;
+  const pt = e => { const b = cv.getBoundingClientRect(); return [e.clientX - b.left, e.clientY - b.top]; };
+  cv.onpointerdown = e => { cv.setPointerCapture(e.pointerId); drawing = true; const [x, y] = pt(e); g.beginPath(); g.moveTo(x, y); g.lineTo(x + 0.1, y); g.stroke(); };
+  cv.onpointermove = e => { if (!drawing) return; const [x, y] = pt(e); g.lineTo(x, y); g.stroke(); if (!sigInk) { sigInk = true; $('#sigph').style.display = 'none'; csUpdate(); } };
+  cv.onpointerup = cv.onpointercancel = () => drawing = false;
+}
+function sigClear(){ const cv = $('#sigcv'); cv.getContext('2d').clearRect(0, 0, cv.width, cv.height); sigInk = false; $('#sigph').style.display = ''; csUpdate(); }
+function csUpdate(){ $('#csok').disabled = !([...document.querySelectorAll('.csck')].every(x => x.checked) && sigInk); }
+async function saveConsent(pid){
+  const p = S.patients[pid], c = S.cfg.consent, sig = uid();
+  await mediaPut(sig, await new Promise(res => $('#sigcv').toBlob(res, 'image/png')));
+  p.consents = [...(p.consents || []), {date:today(), at:Date.now(), ver:c.ver, items:[...c.items], sig}];
+  await dataPut('p:' + pid, p);
+  if (view.name === 'intake') return go('intake', {id:pid, step:4});
+  closeModal(); toast('同意書を保存しました。タブレットをスタッフにお戻しください'); render();
+}
+function wrapText(g, text, maxW){
+  const out = []; let line = '';
+  for (const ch of text) { if (g.measureText(line + ch).width > maxW) { out.push(line); line = ch; } else line += ch; }
+  if (line) out.push(line); return out;
+}
+async function consentImage(p, c){   // 署名済みの同意書を1枚の画像にする（表示・書き出し用）
+  const W = 1200, pad = 60, cv = document.createElement('canvas'), g = cv.getContext('2d');
+  const draw = async (doDraw) => {
+    let y = pad; const t = (s, size, bold, x = pad, color = '#2b2523') => { g.font = `${bold ? 'bold ' : ''}${size}px sans-serif`; g.fillStyle = color; if (doDraw) g.fillText(s, x, y); };
+    t(S.cfg.shopName, 22, false, pad, '#7a6f6b'); y += 50; t('同意書', 40, true); y += 60;
+    g.font = '26px sans-serif';
+    for (const it of c.items) { const ls = wrapText(g, it, W - pad * 2 - 50); t('☑', 28, true); ls.forEach((l, i) => { t(l, 26, false, pad + 50); y += 40; }); y += 14; }
+    y += 30;
+    t(`ご署名（${p.name} 様）`, 24, true); y += 20;
+    const img = await loadImg(await mediaURL(c.sig));
+    const sh = 220, sw = img ? Math.min(W - pad * 2, img.width * sh / img.height) : 0;
+    if (doDraw) { g.strokeStyle = '#ccc'; g.strokeRect(pad, y, W - pad * 2, sh); if (img) g.drawImage(img, pad, y, sw, sh); }
+    y += sh + 50; t(`日付：${fmtDate(c.date)}`, 24); y += 20;
+    return y + pad;
+  };
+  cv.width = W; cv.height = 2000; const H = await draw(false);
+  cv.height = H; g.fillStyle = '#fff'; g.fillRect(0, 0, W, H); await draw(true);
+  return new Promise(res => cv.toBlob(res, 'image/jpeg', 0.92));
+}
+async function showConsent(pid){
+  const p = S.patients[pid], list = (p.consents || []).slice().reverse();
+  const imgs = []; for (const c of list) imgs.push(URL.createObjectURL(await consentImage(p, c)));
+  openModal(`<div class="row"><h3 class="grow" style="margin:0">${esc(p.name)} 様の同意書</h3><button onclick="closeModal()">閉じる</button></div>
+    ${imgs.map((u, i) => `<div style="margin-top:10px">${i ? '<div class="muted">以前の同意書</div>' : ''}<img src="${u}" style="width:100%;border:1px solid var(--line);border-radius:8px"></div>`).join('')}`);
+}
+
 /* ================= カルテ入力 ================= */
 function blankVisit(pid){
   return {id:uid(), isNew:true, pid, date:today(), created:String(Date.now()), pain:'', note:'', S:'', O:'', A:'', P:'',
-    selfcare:[], handover:[], tags:[], chart:[], media:{}, videos:[], draft:false};
+    selfcare:[], handover:[], tags:[], chart:[], media:{}, videos:[], ai:'', draft:false};
 }
 function prepF(v, prevId){
   F = Object.assign(blankVisit(v.pid), structuredClone(v));
@@ -364,8 +566,7 @@ function prepF(v, prevId){
 }
 function newVisit(pid){
   const prev = visitsOf(pid)[0];
-  const v = blankVisit(pid); if (prev) v.tags = [...(prev.tags || [])];
-  prepF(v, prev ? prev.id : null); F.isNew = true; go('visit');
+  prepF(blankVisit(pid), prev ? prev.id : null); F.isNew = true; go('visit');
 }
 function openVisit(id){
   const v = S.visits[id]; const vs = visitsOf(v.pid); const i = vs.findIndex(x => x.id === id);
@@ -374,16 +575,14 @@ function openVisit(id){
 function vVisit(){
   const p = S.patients[F.pid]; const prev = F.prevId && S.visits[F.prevId];
   return `<div class="row" style="margin-bottom:10px"><h2 class="grow" style="margin:0">${esc(p.name)} 様のカルテ ${F.draft ? '<span class="badge">下書き</span>' : ''}</h2></div>
+  ${(p.consents || []).length ? '' : `<div class="banner">⚠ この方の同意書（署名）がまだありません。<button style="min-height:36px;margin-left:6px" onclick="startConsent('${p.id}')">✍ 同意書に署名してもらう</button></div>`}
   ${prev ? summaryBox(prev, '前回のまとめ') : '<div class="banner">初回のカルテです</div>'}
+  ${p.intake ? `<details class="card" ${prev ? '' : 'open'}><summary><b>問診票（お客様記入 ${fmtDate(p.intake.date)}）</b></summary>${intakeSummary(p)}</details>` : ''}
   <div class="card"><div class="grid2"><label class="f">来院日<input type="date" value="${esc(F.date)}" oninput="F.date=this.value"></label>
     <label class="f">備考<input value="${esc(F.note)}" oninput="F.note=this.value"></label></div>
     <label class="f">痛み・つらさ（0＝なし〜10＝最大）</label><div class="chips pain" id="painrow">${painHTML()}</div></div>
   <div class="card"><h4>S（主観）</h4><textarea rows="4" oninput="F.S=this.value" placeholder="お客様の訴え・経過・生活状況など">${esc(F.S)}</textarea>
-    <h4 style="margin-top:14px">O（客観）</h4><textarea rows="4" oninput="F.O=this.value" placeholder="姿勢・可動域・検査結果など">${esc(F.O)}</textarea>
-    <h4 style="margin-top:14px">部位・所見・施術（タップで選択）</h4><div id="tags">${tagsHTML()}</div>
-    <h4 style="margin-top:14px">人体図（指でなぞって印を付ける）</h4>
-    <div class="chartwrap"><img id="bodyimg" src="${BODY_IMG}" alt="人体図"><canvas id="chartcv"></canvas></div>
-    <div class="row center"><button onclick="chartUndo()">↶ 1つ戻す</button><button onclick="chartClear()">印を全部消す</button></div></div>
+    <h4 style="margin-top:14px">O（客観）</h4><textarea rows="4" oninput="F.O=this.value" placeholder="姿勢・可動域・検査結果など">${esc(F.O)}</textarea></div>
   <div class="card"><div class="row"><h4 class="grow" style="margin:0">姿勢写真（正面→右→背面→左）</h4>
     <button onclick="document.body.classList.toggle('nogrid')">グリッド 表示/非表示</button><button onclick="openCompare()">比較する</button></div>
     ${PHASES.map(([ph, pl]) => `<div class="phase"><div class="row"><b class="grow">${pl}</b>
@@ -393,9 +592,15 @@ function vVisit(){
     <div class="row" style="margin-top:14px"><h4 class="grow" style="margin:0">動画（${MAX_VIDEO_SEC}秒まで）</h4>
       <button onclick="startVideo('pre')">🎥 施術前を録画</button><button onclick="startVideo('post')">🎥 施術後を録画</button>
       ${fileInput('動画を選ぶ', `accept="video/*" onchange="pickVideo(this)"`)}</div><div id="vlist"></div></div>
-  <div class="card"><h4>A（アセスメント）</h4><textarea rows="3" oninput="F.A=this.value" placeholder="○○と考えた">${esc(F.A)}</textarea>
-    <h4 style="margin-top:14px">実施内容（P）</h4><textarea rows="3" oninput="F.P=this.value" placeholder="○○を実施">${esc(F.P)}</textarea>
-    <p class="muted" style="margin:14px 0 0">下の候補は、設定で登録したあなたのルールから出ています。タップしたものだけがカルテに残り、次回の「前回のまとめ」に表示されます。</p>
+  <div class="card"><h4>🤖 AIに相談（任意）</h4>
+    <p class="muted" style="margin:0">氏名・連絡先・住所は含めず、年代・性別・問診票・前回の記録・今回のS/Oだけで相談文を作ります。回答はあくまで参考で、採用するかはあなたが決めます。</p>
+    <div class="row" style="margin-top:8px"><button class="primary" onclick="aiOpen()">① 相談文を作ってコピー</button>
+      <a class="btn" href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">② ChatGPTを開く</a></div>
+    <label class="f">③ ChatGPTの回答をここに貼り付け（各項目3つまで候補になります）<textarea rows="4" oninput="F.ai=this.value;refreshAI()">${esc(F.ai)}</textarea></label></div>
+  <div class="card"><h4>A（アセスメント）</h4><textarea id="f_A" rows="3" oninput="F.A=this.value" placeholder="○○と考えた">${esc(F.A)}</textarea>
+    <div id="aiA">${aiACands()}</div>
+    <h4 style="margin-top:14px">P（実施内容）</h4><textarea rows="3" oninput="F.P=this.value" placeholder="○○を実施">${esc(F.P)}</textarea>
+    <p class="muted" style="margin:14px 0 0">セルフケアと申し送りは、タップしたもの・自分で追加したものだけがカルテに残り、次回の「前回のまとめ」に表示されます。</p>
     <div class="grid2" id="lists" style="margin-top:8px">${listsHTML()}</div></div>
   ${F.isNew ? '' : `<div class="row" style="justify-content:flex-end"><button class="danger" onclick="deleteVisit()">このカルテを削除</button></div>`}
   <div class="savebar"><div class="row"><span class="grow muted" id="dirtymsg"></span>
@@ -405,27 +610,62 @@ function painHTML(){
   return ['', ...Array(11).keys()].map(n => `<button class="chip ${String(F.pain) === String(n) ? 'on' : ''}" onclick="setPain('${n}')">${n === '' ? '未記入' : n}</button>`).join('');
 }
 function setPain(n){ F.pain = n; F.dirty = true; $('#painrow').innerHTML = painHTML(); }
-function tagsHTML(){
-  return Object.entries(S.cfg.tags).map(([cat, ts]) => `<div class="tagcat"><div>${esc(cat)}</div><div class="chips">
-    ${ts.map(t => `<button class="chip ${F.tags.includes(t) ? 'on' : ''}" data-t="${esc(t)}" onclick="toggleTag(this.dataset.t)">${esc(t)}</button>`).join('')}</div></div>`).join('');
-}
-function toggleTag(t){
-  F.tags = F.tags.includes(t) ? F.tags.filter(x => x !== t) : [...F.tags, t]; F.dirty = true;
-  $('#tags').innerHTML = tagsHTML(); $('#lists').innerHTML = listsHTML();
-}
-function listsHTML(){
-  const sug = {selfcare:[], handover:[]};
-  for (const r of S.cfg.rules) {
-    const hit = r.when.filter(t => F.tags.includes(t)); if (!hit.length) continue;
-    for (const k of Object.keys(LISTS)) for (const it of (r[k] || []))
-      if (!F[k].includes(it) && !sug[k].some(s => s.t === it)) sug[k].push({t:it, why:hit.join('・')});
+/* ---------- AIへの相談（ChatGPT無料版にコピー＆貼り付け） ---------- */
+const AI_MAX = 3;   // 各項目の候補は3つまで（判断に時間がかからないように）
+function parseAI(t){
+  const out = {A:[], selfcare:[], handover:[]}; let cur = null;
+  for (const raw of String(t || '').split('\n')) {
+    const l = raw.trim(); if (!l) continue;
+    const h = l.replace(/^[#*\s【\[]+/, '');
+    if (l.length < 30 && /^アセスメント/.test(h)) { cur = 'A'; continue; }
+    if (l.length < 30 && /^セルフケア/.test(h)) { cur = 'selfcare'; continue; }
+    if (l.length < 40 && /^(次回|申し送り)/.test(h)) { cur = 'handover'; continue; }
+    if (!cur) continue;
+    const item = l.replace(/^([・\-*•●○◦]|\d+[.)）、])\s*/, '').replace(/\*\*/g, '').trim();
+    if (item && item !== '・' && out[cur].length < AI_MAX) out[cur].push(item);
   }
-  return Object.entries(LISTS).map(([k, title]) => `<div class="advcol"><h4>${title}</h4>
+  return out;
+}
+const ageOf = (birth, at) => birth ? Math.floor((new Date((at || today()) + 'T00:00') - new Date(birth + 'T00:00')) / 31557600000) : null;
+function aiPrompt(){
+  const p = S.patients[F.pid], prev = F.prevId && S.visits[F.prevId], age = ageOf(p.birth, F.date);
+  const L = ['あなたは整体院（医療機関ではありません）の施術者の相談相手です。以下の情報をもとに、施術者が判断するための材料を提案してください。病名を断定したり、医療行為を勧めたりしないでください。', '',
+    `【お客様】${age !== null ? Math.floor(age / 10) * 10 + '代' : '年代不明'}・${p.sex || '性別未回答'}`];
+  if (p.intake) L.push('【問診票】', intakeText(p.intake));
+  if (prev) L.push(`【前回の記録（${fmtDate(prev.date)}）】`, `アセスメント：${prev.A || 'なし'}`, `実施内容：${prev.P || 'なし'}`,
+    `セルフケア：${(prev.selfcare || []).join('、') || 'なし'}`, `申し送り：${(prev.handover || []).join('、') || 'なし'}`);
+  L.push('【今回の主観（S）】', F.S || 'なし', '【今回の客観（O）】', F.O || 'なし');
+  if (hasPain(F)) L.push(`【痛み・つらさ】${F.pain}/10`);
+  L.push('', `次の形式で、各項目${AI_MAX}つまで、1行ずつ簡潔に答えてください。`, '【アセスメント】', '・', '【セルフケア】', '・', '【次回への申し送り】（次回 再評価・確認すること）', '・');
+  return L.join('\n');
+}
+function aiOpen(){
+  openModal(`<div class="row"><h3 class="grow" style="margin:0">AIへの相談文</h3><button onclick="closeModal()">閉じる</button></div>
+    <p class="muted">送る前に内容を確認してください。S・O・問診の自由記入欄に、お名前など個人が分かる言葉が入っていたら消してください。</p>
+    <textarea id="aitext" rows="14">${esc(aiPrompt())}</textarea>
+    <div class="row" style="margin-top:10px"><button class="primary" onclick="aiCopy()">コピーする</button>
+    <a class="btn" href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">ChatGPTを開く</a></div>`);
+}
+async function aiCopy(){
+  const t = $('#aitext');
+  try { await navigator.clipboard.writeText(t.value); } catch (e) { t.select(); document.execCommand('copy'); }
+  toast('コピーしました。ChatGPTに貼り付けて送信してください');
+}
+const aiSug = () => parseAI(F.ai);
+function aiACands(){
+  const c = aiSug().A.filter(t => !F.A.includes(t)); if (!c.length) return '';
+  return `<div class="sub">AIのアセスメント案（タップでAに追記）</div>${c.map(t => `<button class="cand" data-t="${esc(t)}" onclick="adoptA(this.dataset.t)"><span>＋ ${esc(t)}</span><small>AI</small></button>`).join('')}`;
+}
+function adoptA(t){ F.A = F.A ? F.A + '\n' + t : t; $('#f_A').value = F.A; F.dirty = true; refreshAI(); }
+function refreshAI(){ $('#aiA').innerHTML = aiACands(); $('#lists').innerHTML = listsHTML(); }
+function listsHTML(){
+  const sug = aiSug();
+  return Object.entries(LISTS).map(([k, title]) => { const c = sug[k].filter(t => !F[k].includes(t));
+    return `<div class="advcol"><h4>${title}</h4>
     <div class="sub">✔ カルテに残す内容</div>
     ${F[k].length ? F[k].map((t, i) => `<div class="adopted"><input value="${esc(t)}" oninput="F.${k}[${i}]=this.value"><button onclick="unadopt('${k}',${i})" title="外す">✕</button></div>`).join('') : '<div class="muted">まだありません</div>'}
-    <div class="sub">ルールからの候補（タップで追加）</div>
-    ${sug[k].length ? sug[k].map(s => `<button class="cand" data-t="${esc(s.t)}" onclick="adopt('${k}',this.dataset.t)"><span>＋ ${esc(s.t)}</span><small>${esc(s.why)}</small></button>`).join('') : '<div class="muted">該当なし（部位・所見・施術を選ぶと候補が出ます）</div>'}
-    <div class="row" style="margin-top:6px"><input id="add_${k}" class="grow" placeholder="自分で追加" onkeydown="if(event.key==='Enter')addOwn('${k}')"><button onclick="addOwn('${k}')">追加</button></div></div>`).join('');
+    ${c.length ? `<div class="sub">AIの案（タップで追加）</div>${c.map(t => `<button class="cand" data-t="${esc(t)}" onclick="adopt('${k}',this.dataset.t)"><span>＋ ${esc(t)}</span><small>AI</small></button>`).join('')}` : ''}
+    <div class="row" style="margin-top:6px"><input id="add_${k}" class="grow" placeholder="自分で追加" onkeydown="if(event.key==='Enter')addOwn('${k}')"><button onclick="addOwn('${k}')">追加</button></div></div>`; }).join('');
 }
 function adopt(k, t){ F[k].push(t); F.dirty = true; $('#lists').innerHTML = listsHTML(); }
 function unadopt(k, i){ F[k].splice(i, 1); F.dirty = true; $('#lists').innerHTML = listsHTML(); }
@@ -447,7 +687,7 @@ async function saveVisit(opt = {}){
   F.delMedia = [];
   const trim = a => a.map(x => x.trim()).filter(Boolean);
   const v = {id:F.id, pid:F.pid, date:F.date, created:F.created, pain:F.pain, note:F.note, S:F.S, O:F.O, A:F.A, P:F.P,
-    selfcare:trim(F.selfcare), handover:trim(F.handover), tags:F.tags, chart:F.chart, media:F.media,
+    selfcare:trim(F.selfcare), handover:trim(F.handover), tags:F.tags, chart:F.chart, media:F.media, ai:F.ai,
     videos:F.videos.map(({id, phase, dur, type, memo}) => ({id, phase, dur, type, memo})), draft:!!opt.draft};
   await dataPut('v:' + v.id, v); S.visits[v.id] = v; F.isNew = false; F.draft = v.draft;
   if (opt.silent) return;
@@ -464,29 +704,34 @@ async function deleteVisit(){
 }
 
 /* ================= 人体図 ================= */
-let curStroke = null;
-function initChart(){
-  const cv = $('#chartcv'), img = $('#bodyimg'); if (!cv) return;
+// 人体図に指で印を付ける。strokes は [[x,y],...] の配列（0〜1の相対座標）の配列
+let curStroke = null, chartArr = null;
+function initChart(arr){
+  const cv = $('#chartcv'), img = $('#bodyimg'); if (!cv) return; chartArr = arr;
   const fit = () => { const r = img.getBoundingClientRect(), dpr = devicePixelRatio || 1;
     cv.width = r.width * dpr; cv.height = r.height * dpr; cv.style.width = r.width + 'px'; cv.style.height = r.height + 'px'; drawChart(); };
   if (img.complete) fit(); else img.onload = fit;
   window.onresize = () => { if ($('#chartcv')) fit(); };
   const pt = e => { const r = cv.getBoundingClientRect(); return [+((e.clientX - r.left) / r.width).toFixed(4), +((e.clientY - r.top) / r.height).toFixed(4)]; };
-  cv.onpointerdown = e => { cv.setPointerCapture(e.pointerId); curStroke = [pt(e)]; F.chart.push(curStroke); F.dirty = true; drawChart(); };
+  cv.onpointerdown = e => { cv.setPointerCapture(e.pointerId); curStroke = [pt(e)]; chartArr.push(curStroke); drawChart(); };
   cv.onpointermove = e => { if (!curStroke) return; const q = pt(e), l = curStroke[curStroke.length - 1];
     if (Math.hypot(q[0] - l[0], q[1] - l[1]) > 0.004) { curStroke.push(q); drawChart(); } };
   cv.onpointerup = cv.onpointercancel = () => curStroke = null;
 }
 function drawChart(){
-  const cv = $('#chartcv'); if (!cv) return; const c = cv.getContext('2d');
+  const cv = $('#chartcv'); if (!cv || !chartArr) return; const c = cv.getContext('2d');
   c.clearRect(0, 0, cv.width, cv.height);
   c.strokeStyle = 'rgba(215,30,30,.85)'; c.lineWidth = Math.max(3, cv.width / 140); c.lineCap = c.lineJoin = 'round';
-  for (const s of F.chart) { c.beginPath();
+  for (const s of chartArr) { c.beginPath();
     s.forEach(([x, y], i) => i ? c.lineTo(x * cv.width, y * cv.height) : c.moveTo(x * cv.width, y * cv.height));
     if (s.length === 1) c.lineTo(s[0][0] * cv.width + 0.5, s[0][1] * cv.height); c.stroke(); }
 }
-function chartUndo(){ F.chart.pop(); F.dirty = true; drawChart(); }
-function chartClear(){ if (F.chart.length && confirm('人体図の印をすべて消しますか？')) { F.chart = []; F.dirty = true; drawChart(); } }
+function chartUndo(){ chartArr.pop(); drawChart(); }
+function chartClear(){ if (chartArr.length && confirm('印をすべて消しますか？')) { chartArr.length = 0; drawChart(); } }
+const chartHTML = () => `<div class="chartwrap"><img id="bodyimg" src="${BODY_IMG}" alt="人体図"><canvas id="chartcv"></canvas></div>
+  <div class="row center"><button onclick="chartUndo()">↶ 1つ戻す</button><button onclick="chartClear()">全部消す</button></div>`;
+// 保存済みの印を、人体図の上に描いた画像（表示用）
+async function chartImageURL(strokes){ return URL.createObjectURL(new Blob([await chartPng(strokes)], {type:'image/png'})); }
 
 /* ================= 写真 ================= */
 async function slotURL(key){ return F.newUrls[key] || await mediaURL(F.media[key]); }
@@ -694,14 +939,10 @@ function vSettings(){
   return `<div class="card"><h2>基本設定</h2><div class="grid2"><label class="f">店舗名<input id="s_shop" value="${esc(c.shopName)}"></label>
     <label class="f">自動ロックまでの時間（分）<input id="s_lock" type="number" min="1" max="60" value="${c.lockMin}"></label></div>
     <p class="muted">カルテ入力中に自動ロックされた場合、入力内容は下書きとして保存され、PINを入れると元の画面に戻ります。</p></div>
-  <div class="card"><h2>タグ（1行に1つ）</h2><p class="muted" style="margin-top:0">カルテで選ぶ「部位・所見・施術」の選択肢です。</p>
-    <div class="grid2">${Object.entries(c.tags).map(([cat, ts]) => `<label class="f">${esc(cat)}<textarea class="s_tag" data-cat="${esc(cat)}" rows="8">${esc(ts.join('\n'))}</textarea></label>`).join('')}</div>
-    <div class="row" style="margin-top:10px"><button class="primary" onclick="saveSettings()">基本設定とタグを保存</button></div></div>
-  <div class="card"><h2>申し送り・セルフケアのルール</h2><p class="muted" style="margin-top:0">「このタグを選んだら → この申し送り／セルフケアを候補に出す」というあなたの判断基準です。最初の5件はサンプルなので、ご自身の考えに書き換えてください。</p>
-    ${c.rules.map(r => `<div class="card" style="background:var(--chip)"><div class="row"><div class="grow"><b>${r.when.map(esc).join(' / ') || '（タグ未設定）'}</b> のとき ${r.memo ? `<small>${esc(r.memo)}</small>` : ''}
-      <div>申し送り：${(r.handover || []).map(esc).join('、') || '-'}</div><div>セルフケア：${(r.selfcare || []).map(esc).join('、') || '-'}</div></div>
-      <button onclick="editRule('${r.id}')">編集</button><button class="danger" onclick="delRule('${r.id}')">削除</button></div></div>`).join('')}
-    <button onclick="editRule()">＋ ルール追加</button></div>
+    <div class="row"><button class="primary" onclick="saveSettings()">基本設定を保存</button></div></div>
+  <div class="card"><h2>同意書の文面</h2><p class="muted" style="margin-top:0">お客様がチェックする同意項目です（1行に1項目）。文面を変えると版が新しくなり、以前に署名した方には「新しい文面で署名してもらう」が表示されます。現在：第${c.consent.ver}版</p>
+    <label class="f">同意項目（1行に1つ）<textarea id="s_cs" rows="7">${esc(c.consent.items.join('\n'))}</textarea></label>
+    <div class="row" style="margin-top:10px"><button class="primary" onclick="saveConsentText()">同意書の文面を保存</button></div></div>
   <div class="card"><h2>エクセル・写真の書き出し（パソコンで見る用）</h2>
     <p class="muted" style="margin-top:0">原本と同じ書式のエクセル（来院1回＝1シート、姿勢写真つき）と、写真・動画を、1人1フォルダにまとめたZIPファイルで書き出します。1人分だけなら、患者の画面からも書き出せます。<b style="color:var(--warn)">暗号化されない</b>ので、USBに移したらタブレットからは削除してください。</p>
     <button class="primary" onclick="exportPatients(Object.keys(S.patients))">📤 全患者を書き出す</button></div>
@@ -717,31 +958,15 @@ async function saveSettings(){
   const c = S.cfg;
   c.shopName = $('#s_shop').value.trim() || c.shopName;
   c.lockMin = Math.max(1, Math.min(60, +$('#s_lock').value || 5));
-  document.querySelectorAll('.s_tag').forEach(t => c.tags[t.dataset.cat] = [...new Set(lines(t.value))]);
   await dataPut('cfg', c); resetIdle(); toast('設定を保存しました'); render();
 }
-function editRule(id){
-  const r = id ? S.cfg.rules.find(x => x.id === id) : {id:null, when:[], handover:[], selfcare:[], memo:''};
-  const all = Object.values(S.cfg.tags).flat();
-  openModal(`<h3 style="margin-top:0">${id ? 'ルールの編集' : 'ルールの追加'}</h3>
-    <div class="sub">このタグのどれかを選んだとき</div>
-    <div class="chips" id="r_when">${all.map(t => `<button class="chip ${r.when.includes(t) ? 'on' : ''}" data-t="${esc(t)}" onclick="this.classList.toggle('on')">${esc(t)}</button>`).join('')}</div>
-    <div class="grid2"><label class="f">次回への申し送り（1行に1つ）<textarea id="r_ho" rows="5">${esc((r.handover || []).join('\n'))}</textarea></label>
-    <label class="f">セルフケア（1行に1つ）<textarea id="r_sc" rows="5">${esc((r.selfcare || []).join('\n'))}</textarea></label></div>
-    <label class="f">メモ（このルールの根拠など）<input id="r_memo" value="${esc(r.memo)}"></label>
-    <div class="row" style="margin-top:12px"><button class="primary" onclick="saveRule('${id || ''}')">保存</button><button onclick="closeModal()">キャンセル</button></div>`);
-}
-async function saveRule(id){
-  const r = {id:id || uid(), when:[...document.querySelectorAll('#r_when .chip.on')].map(b => b.dataset.t),
-    handover:lines($('#r_ho').value), selfcare:lines($('#r_sc').value), memo:$('#r_memo').value.trim()};
-  if (!r.when.length) return toast('タグを1つ以上選んでください');
-  const i = S.cfg.rules.findIndex(x => x.id === id);
-  if (i >= 0) S.cfg.rules[i] = r; else S.cfg.rules.push(r);
-  await dataPut('cfg', S.cfg); closeModal(); toast('ルールを保存しました'); render();
-}
-async function delRule(id){
-  if (!confirm('このルールを削除しますか？')) return;
-  S.cfg.rules = S.cfg.rules.filter(x => x.id !== id); await dataPut('cfg', S.cfg); render();
+async function saveConsentText(){
+  const items = lines($('#s_cs').value), c = S.cfg.consent;
+  if (!items.length) return toast('同意項目を1つ以上入力してください');
+  if (items.join('\n') === c.items.join('\n')) return toast('変更はありません');
+  if (!confirm('同意書の文面を変更します。版が新しくなり、署名済みの方にも新しい文面での署名をおすすめする表示が出ます。よろしいですか？')) return;
+  S.cfg.consent = {ver:c.ver + 1, items};
+  await dataPut('cfg', S.cfg); toast('同意書の文面を保存しました'); render();
 }
 
 /* ================= バックアップ ================= */
@@ -901,39 +1126,65 @@ async function photoRows(v, startRow){
   return {xml, pics};
 }
 const picAnchor = (p, n) => `<xdr:oneCellAnchor><xdr:from><xdr:col>${p.col}</xdr:col><xdr:colOff>${p.off}</xdr:colOff><xdr:row>${p.row}</xdr:row><xdr:rowOff>76200</xdr:rowOff></xdr:from><xdr:ext cx="${p.cx}" cy="${p.cy}"/><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${n + 10}" name="写真 ${n}"/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr><xdr:blipFill><a:blip xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:embed="rId${n + 1}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${p.cx}" cy="${p.cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:oneCellAnchor>`;
+const XML_HEAD = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
+const NS_R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships', NS_PR = 'http://schemas.openxmlformats.org/package/2006/relationships';
+const fmtBirth = b => b ? b.split('-').map(Number).join('/') : '';   // 西暦の生年月日のみ（曜日・年齢は入れない）
+// 「問診票」シート（原本にはないので、原本の書式（枠・色）を使って作る）
+async function intakeSheet(p){
+  const I = p.intake, lc = lastConsent(p);
+  const rows = [['記入日', fmtBirth(I.date)], ['お名前', p.name], ['ふりがな', p.kana], ['生年月日', fmtBirth(p.birth)], ['性別', p.sex], ['携帯番号', p.phone],
+    ['ご住所', [p.zip ? '〒' + p.zip : '', p.addr].filter(Boolean).join(' ')],
+    ...INTAKE.filter(f => f.t !== 'chart').map(f => [shortQ(f), inAnswer(f, I)])];
+  if (lc) rows.push(['同意書', `署名済（${fmtBirth(lc.date)}）`]);
+  const cell = (ref, t, s) => `<c r="${ref}" s="${s}"${t ? ` t="inlineStr"><is><t xml:space="preserve">${xmlEsc(t)}</t></is></c>` : '/>'}`;
+  let sd = `<row r="1" ht="24" customHeight="1">${cell('A1', '問診票（お客様記入）', 2)}</row>`;
+  rows.forEach(([q, a], i) => { const r = i + 2, ln = Math.max(Math.ceil(strW(q) / 30), String(a || '').split('\n').reduce((n, l) => n + Math.max(1, Math.ceil(strW(l) / 58)), 0));
+    sd += `<row r="${r}" ht="${Math.max(24, ln * 15 + 8)}" customHeight="1">${cell('A' + r, q, 11)}${cell('B' + r, a, 9)}</row>`; });
+  const xml = `${XML_HEAD}<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="${NS_R}"><sheetViews><sheetView tabSelected="1" workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="15.75"/><cols><col min="1" max="1" width="32" customWidth="1"/><col min="2" max="2" width="60" customWidth="1"/></cols><sheetData>${sd}</sheetData><pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/><drawing r:id="rId1"/></worksheet>`;
+  const pic = {col:2, off:95250, row:1, cx:300 * 9525, cy:329 * 9525};
+  const drawing = `${XML_HEAD}<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">${picAnchor(pic, 0)}</xdr:wsDr>`;
+  return {name:'問診票', xml, drawing, images:[{ext:'png', buf:await chartPng(I.chart)}]};
+}
+async function visitSheet(p, v, first, selected){
+  const c = v ? visitCells(v) : {}, lc = lastConsent(p);
+  if (first && lc) c.note = [c.note, `同意書：署名済（${fmtBirth(lc.date)}）`].filter(Boolean).join('\n');
+  let x = (first ? XLSX_TPL.sheet1 : XLSX_TPL.sheet2).replace(/ topLeftCell="[A-Z]+\d+"/, '').replace(/ tabSelected="1"/, '');
+  if (selected) x = x.replace('<sheetView ', '<sheetView tabSelected="1" ');
+  const o = first ? 1 : 0;   // 初回シートは「生年月日/性別」の行がある分、1行下がる
+  x = fillCell(x, 'B2', c.date);
+  if (first) { x = fillCell(x, 'B3', fmtBirth(p.birth)); x = fillCell(x, 'C3', p.sex); }   // 性別は「備考」見出しのすぐ下
+  x = fillCell(x, `B${3 + o}`, c.S); x = fillCell(x, `B${4 + o}`, c.O); x = fillCell(x, `B${5 + o}`, c.A);
+  x = fillCell(x, `B${6 + o}`, c.P); x = fillCell(x, `B${7 + o}`, c.self); x = fillCell(x, `C${3 + o}`, c.note, NOTE_STYLE);
+  x = fitRow(x, 3 + o, [[c.S, 74], [c.note, 30]]);
+  [[4, c.O], [5, c.A], [6, c.P], [7, c.self]].forEach(([r, t]) => { x = fitRow(x, r + o, [[t, 74]]); });
+  const ph = v ? await photoRows(v, 9 + o) : {xml:'', pics:[]};   // セルフケア欄の1行下から
+  x = x.replace('</sheetData>', ph.xml + '</sheetData>').replace(/<dimension ref="[^"]*"\/>/, '');
+  // 人体図：その回に印があればそれを、なければ初回シートにはお客様が問診票で囲んだ部位を描く
+  const strokes = v && (v.chart || []).length ? v.chart : (first && p.intake ? p.intake.chart : null);
+  const drawing = (first ? XLSX_TPL.drawing1 : XLSX_TPL.drawing2).replace('</xdr:wsDr>', ph.pics.map((q, n) => picAnchor(q, n + 1)).join('') + '</xdr:wsDr>');
+  return {xml:x, drawing, images:[{ext:'png', buf:await chartPng(strokes)}, ...ph.pics.map(q => ({ext:'jpeg', buf:q.buf}))]};
+}
 async function buildXlsx(p){
-  const vs = visitsOf(p.id).slice().reverse();
-  const sheets = vs.length ? vs : [null];
-  const birth = p.birth ? p.birth.split('-').map(Number).join('/') : '';   // 西暦の生年月日のみ（曜日・年齢は入れない）
-  const {zip, blob} = memZip();
-  const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships', PR = 'http://schemas.openxmlformats.org/package/2006/relationships';
+  const vs = visitsOf(p.id).slice().reverse(), sheets = [];
+  if (p.intake) sheets.push(await intakeSheet(p));
+  const list = vs.length ? vs : [null];
+  for (let i = 0; i < list.length; i++) sheets.push(Object.assign(await visitSheet(p, list[i], i === 0, !p.intake && i === 0), {name:SHEET_NAMES[i] || `${i + 1}回目`}));
+  const {zip, blob} = memZip(), R = NS_R, PR = NS_PR;
   for (let i = 0; i < sheets.length; i++) {
-    const first = i === 0, v = sheets[i], c = v ? visitCells(v) : {};
-    let x = (first ? XLSX_TPL.sheet1 : XLSX_TPL.sheet2).replace(/ topLeftCell="[A-Z]+\d+"/, '').replace(/ tabSelected="1"/, '');
-    if (first) x = x.replace('<sheetView ', '<sheetView tabSelected="1" ');
-    const o = first ? 1 : 0;   // 初回シートは「生年月日/性別」の行がある分、1行下がる
-    x = fillCell(x, 'B2', c.date);
-    if (first) { x = fillCell(x, 'B3', birth); x = fillCell(x, 'C3', p.sex); }   // 性別は「備考」見出しのすぐ下
-    x = fillCell(x, `B${3 + o}`, c.S); x = fillCell(x, `B${4 + o}`, c.O); x = fillCell(x, `B${5 + o}`, c.A);
-    x = fillCell(x, `B${6 + o}`, c.P); x = fillCell(x, `B${7 + o}`, c.self); x = fillCell(x, `C${3 + o}`, c.note, NOTE_STYLE);
-    x = fitRow(x, 3 + o, [[c.S, 74], [c.note, 30]]);
-    [[4, c.O], [5, c.A], [6, c.P], [7, c.self]].forEach(([r, t]) => { x = fitRow(x, r + o, [[t, 74]]); });
-    const ph = v ? await photoRows(v, 9 + o) : {xml:'', pics:[]};   // セルフケア欄の1行下から
-    x = x.replace('</sheetData>', ph.xml + '</sheetData>').replace(/<dimension ref="[^"]*"\/>/, '');
-    await zip.add(`xl/worksheets/sheet${i + 1}.xml`, x);
-    await zip.add(`xl/worksheets/_rels/sheet${i + 1}.xml.rels`, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="${PR}"><Relationship Id="rId1" Type="${R}/drawing" Target="../drawings/drawing${i + 1}.xml"/></Relationships>`);
-    await zip.add(`xl/drawings/drawing${i + 1}.xml`, (first ? XLSX_TPL.drawing1 : XLSX_TPL.drawing2).replace('</xdr:wsDr>', ph.pics.map((q, n) => picAnchor(q, n + 1)).join('') + '</xdr:wsDr>'));
-    await zip.add(`xl/drawings/_rels/drawing${i + 1}.xml.rels`, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="${PR}"><Relationship Id="rId1" Type="${R}/image" Target="../media/image${i + 1}.png"/>${ph.pics.map((q, n) => `<Relationship Id="rId${n + 2}" Type="${R}/image" Target="../media/photo${i + 1}_${n + 1}.jpeg"/>`).join('')}</Relationships>`);
-    await zip.add(`xl/media/image${i + 1}.png`, await chartPng(v && v.chart));
-    for (let n = 0; n < ph.pics.length; n++) await zip.add(`xl/media/photo${i + 1}_${n + 1}.jpeg`, ph.pics[n].buf);
+    const s = sheets[i], n = i + 1;
+    await zip.add(`xl/worksheets/sheet${n}.xml`, s.xml);
+    await zip.add(`xl/worksheets/_rels/sheet${n}.xml.rels`, `${XML_HEAD}<Relationships xmlns="${PR}"><Relationship Id="rId1" Type="${R}/drawing" Target="../drawings/drawing${n}.xml"/></Relationships>`);
+    await zip.add(`xl/drawings/drawing${n}.xml`, s.drawing);
+    await zip.add(`xl/drawings/_rels/drawing${n}.xml.rels`, `${XML_HEAD}<Relationships xmlns="${PR}">${s.images.map((im, k) => `<Relationship Id="rId${k + 1}" Type="${R}/image" Target="../media/img${n}_${k + 1}.${im.ext}"/>`).join('')}</Relationships>`);
+    for (let k = 0; k < s.images.length; k++) await zip.add(`xl/media/img${n}_${k + 1}.${s.images[k].ext}`, s.images[k].buf);
   }
-  const n = sheets.length, ids = [...Array(n).keys()];
-  await zip.add('xl/workbook.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="${R}"><bookViews><workbookView/></bookViews><sheets>${ids.map(i => `<sheet name="${xmlEsc(SHEET_NAMES[i] || `${i + 1}回目`)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets></workbook>`);
-  await zip.add('xl/_rels/workbook.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="${PR}">${ids.map(i => `<Relationship Id="rId${i + 1}" Type="${R}/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${n + 1}" Type="${R}/styles" Target="styles.xml"/><Relationship Id="rId${n + 2}" Type="${R}/theme" Target="theme/theme1.xml"/><Relationship Id="rId${n + 3}" Type="${R}/sharedStrings" Target="sharedStrings.xml"/></Relationships>`);
+  const N = sheets.length, ids = [...Array(N).keys()];
+  await zip.add('xl/workbook.xml', `${XML_HEAD}<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="${R}"><bookViews><workbookView/></bookViews><sheets>${ids.map(i => `<sheet name="${xmlEsc(sheets[i].name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets></workbook>`);
+  await zip.add('xl/_rels/workbook.xml.rels', `${XML_HEAD}<Relationships xmlns="${PR}">${ids.map(i => `<Relationship Id="rId${i + 1}" Type="${R}/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${N + 1}" Type="${R}/styles" Target="styles.xml"/><Relationship Id="rId${N + 2}" Type="${R}/theme" Target="theme/theme1.xml"/><Relationship Id="rId${N + 3}" Type="${R}/sharedStrings" Target="sharedStrings.xml"/></Relationships>`);
   await zip.add('xl/styles.xml', XLSX_TPL.styles); await zip.add('xl/theme/theme1.xml', XLSX_TPL.theme); await zip.add('xl/sharedStrings.xml', XLSX_TPL.sst);
   const CT = 'application/vnd.openxmlformats-officedocument';
-  await zip.add('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Default Extension="jpeg" ContentType="image/jpeg"/><Override PartName="/xl/workbook.xml" ContentType="${CT}.spreadsheetml.sheet.main+xml"/>${ids.map(i => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="${CT}.spreadsheetml.worksheet+xml"/><Override PartName="/xl/drawings/drawing${i + 1}.xml" ContentType="${CT}.drawing+xml"/>`).join('')}<Override PartName="/xl/theme/theme1.xml" ContentType="${CT}.theme+xml"/><Override PartName="/xl/styles.xml" ContentType="${CT}.spreadsheetml.styles+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="${CT}.spreadsheetml.sharedStrings+xml"/></Types>`);
-  await zip.add('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="${PR}"><Relationship Id="rId1" Type="${R}/officeDocument" Target="xl/workbook.xml"/></Relationships>`);
+  await zip.add('[Content_Types].xml', `${XML_HEAD}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Default Extension="jpeg" ContentType="image/jpeg"/><Override PartName="/xl/workbook.xml" ContentType="${CT}.spreadsheetml.sheet.main+xml"/>${ids.map(i => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="${CT}.spreadsheetml.worksheet+xml"/><Override PartName="/xl/drawings/drawing${i + 1}.xml" ContentType="${CT}.drawing+xml"/>`).join('')}<Override PartName="/xl/theme/theme1.xml" ContentType="${CT}.theme+xml"/><Override PartName="/xl/styles.xml" ContentType="${CT}.spreadsheetml.styles+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="${CT}.spreadsheetml.sharedStrings+xml"/></Types>`);
+  await zip.add('_rels/.rels', `${XML_HEAD}<Relationships xmlns="${PR}"><Relationship Id="rId1" Type="${R}/officeDocument" Target="xl/workbook.xml"/></Relationships>`);
   await zip.finish();
   return blob('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet').arrayBuffer();
 }
@@ -974,6 +1225,7 @@ async function exportPatients(ids){
       while (used.has(dir)) dir += '_2'; used.add(dir);
       $('#prog').textContent = `${i + 1} / ${ids.length} 人目：${p.name} 様`;
       await zip.add(`${dir}/カルテ_${dir}.xlsx`, await buildXlsx(p));
+      for (const c of (p.consents || [])) await zip.add(`${dir}/承諾書/${c.date}_同意書.jpg`, await (await consentImage(p, c)).arrayBuffer());
       for (const v of visitsOf(p.id).slice().reverse()) {
         for (const [ph] of PHASES) for (const [d, dl] of DIRS) {
           const id = (v.media || {})[ph + '_' + d]; if (!id) continue;
@@ -1005,7 +1257,7 @@ async function exportPatients(ids){
 }
 
 /* ================= 起動 ================= */
-$('#modal').addEventListener('click', e => { if (e.target.id === 'modal' && !rec) closeModal(); });
+$('#modal').addEventListener('click', e => { if (e.target.id === 'modal' && !rec && !busy && !$('#sigcv')) closeModal(); });
 window.addEventListener('beforeunload', e => { if (F && F.dirty) { e.preventDefault(); e.returnValue = ''; } });
 (async () => {
   if (!window.crypto?.subtle || !window.indexedDB) { $('#app').innerHTML = '<p style="padding:20px">このブラウザでは使えません。Chromeで https のアドレスから開いてください。</p>'; return; }
